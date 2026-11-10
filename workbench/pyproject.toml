@@ -1,0 +1,29 @@
+[project]
+name = "ERTM Solver Workbench"
+version = "0.1.0"
+description = "Qt Quick front-end workbench for SeismicProjectERTM"
+
+[tool.pyside6-project]
+files = [
+    "main.py",
+    "ertm_bridge.py",
+    "untitled/Main.qml",
+    "untitled/qmldir",
+    "untitled/theme/Theme.js",
+    "untitled/components/CardBackground.qml",
+    "untitled/components/CardHeader.qml",
+    "untitled/components/ComparePane.qml",
+    "untitled/components/FieldPane.qml",
+    "untitled/components/LabButton.qml",
+    "untitled/components/MetricTile.qml",
+    "untitled/components/ModuleRow.qml",
+    "untitled/components/NavItem.qml",
+    "untitled/components/RightPanel.qml",
+    "untitled/components/Sidebar.qml",
+    "untitled/components/StatusChip.qml",
+    "untitled/views/ConfigView.qml",
+    "untitled/views/ModelCompareView.qml",
+    "untitled/views/RealDataView.qml",
+    "untitled/views/QCompView.qml",
+    "untitled/views/SourceView.qml",
+]
