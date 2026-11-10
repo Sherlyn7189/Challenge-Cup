@@ -1,0 +1,95 @@
+{
+  "project": {
+    "name": "ERTM Demo",
+    "version": "0.1.0"
+  },
+  "grid": {
+    "nx": 201,
+    "nz": 151,
+    "dx": 5.0,
+    "dz": 5.0,
+    "x0": 0.0,
+    "z0": 0.0
+  },
+  "model": {
+    "background_vp": 3000.0,
+    "background_vs": 1700.0,
+    "background_rho": 2400.0,
+    "background_qp": 100.0,
+    "background_qs": 50.0,
+    "layers": [
+      {
+        "z_top": 0.0,
+        "vp": 2400.0,
+        "vs": 1200.0,
+        "rho": 2200.0,
+        "qp": 80.0,
+        "qs": 40.0
+      },
+      {
+        "z_top": 250.0,
+        "vp": 3000.0,
+        "vs": 1600.0,
+        "rho": 2400.0,
+        "qp": 100.0,
+        "qs": 50.0
+      },
+      {
+        "z_top": 600.0,
+        "vp": 3800.0,
+        "vs": 2100.0,
+        "rho": 2500.0,
+        "qp": 120.0,
+        "qs": 60.0
+      }
+    ],
+    "anomaly": {
+      "kind": "cave",
+      "x": 500.0,
+      "z": 350.0,
+      "rx": 40.0,
+      "rz": 30.0,
+      "vp": 1800.0,
+      "vs": 900.0,
+      "rho": 2000.0,
+      "qp": 40.0,
+      "qs": 20.0
+    }
+  },
+  "source": {
+    "x": 500.0,
+    "z": 20.0,
+    "f0": 20.0,
+    "kind": "ricker",
+    "amplitude": 1.0,
+    "delay": 0.08
+  },
+  "receivers": {
+    "count": 101,
+    "x_start": 0.0,
+    "x_end": 1000.0,
+    "z": 10.0,
+    "component": "vz"
+  },
+  "solver": {
+    "nt": 600,
+    "dt": 0.001,
+    "order": 8,
+    "boundary": "cpml",
+    "dtype": "float32"
+  },
+  "imaging": {
+    "mode": "pp",
+    "normalize": true,
+    "laplacian": true
+  },
+  "output": {
+    "root": "output",
+    "save_figures": true,
+    "save_data": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file_name": "ertm.log"
+  }
+}

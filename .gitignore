@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.idea/workspace.xml
+data/*.sgy
+data/*.segy
+synthetic_section.png
+output/*
+!output/.gitkeep
+!output/*/.gitkeep
+tmp*/
+.pytest_cache/
