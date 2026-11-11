@@ -333,7 +333,7 @@ class RTMImager:
             image=np.asarray(image, dtype=np.float32),
             grid=model.grid,
             mode=self.config.mode,
-            meta=self._meta(spec, engine, shot, store, condition, start_step),
+            meta=self._meta(spec, engine, shot, store, condition, start_step, prop, back),
         )
         result.validate()
         logger.info(
@@ -507,7 +507,25 @@ class RTMImager:
         store: CheckpointStore,
         condition: str,
         start_step: int = 0,
+        prop: Propagator2D | None = None,
+        back: Propagator2D | None = None,
     ) -> dict[str, Any]:
+        q_meta: dict[str, Any] = {
+            "model": str(self.q_config.model),
+            "enabled": bool(self.q_config.enabled),
+            "alpha_c": float(self.q_config.alpha_c),
+            "f_ref": float(self.q_config.f_ref),
+        }
+        if self.solver_config.engine == "viscoacoustic":
+            forward_summary = getattr(prop, "quality_summary", None) if prop is not None else None
+            if isinstance(forward_summary, dict):
+                q_meta.update(forward_summary)
+            back_summary = getattr(back, "quality_summary", None) if back is not None else None
+            if isinstance(back_summary, dict):
+                # 补偿强度与截断次数取反传侧（真正的 Q 逆过程）
+                q_meta["compensation"] = bool(back_summary.get("compensation", False))
+                q_meta["alpha_c"] = float(back_summary.get("alpha_c", q_meta["alpha_c"]))
+                q_meta["clipped_steps"] = int(back_summary.get("clipped", 0))
         return {
             "placeholder": False,
             "method": "reverse-time migration (two-way wave equation)",
@@ -523,6 +541,7 @@ class RTMImager:
             "checkpoints": store.summary(),
             "start_step": int(start_step),
             "start_periods": float(self.config.start_periods),
+            "q": q_meta,
             "nt": int(spec.nt),
             "dt": float(spec.dt),
             "order": int(spec.order),
