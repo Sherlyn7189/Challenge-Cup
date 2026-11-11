@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import SolverConfig
+from .config import QConfig, SolverConfig
 from .exceptions import SolverError
 from .logging_utils import get_logger
 from .propagation import (
     PropagationSpec,
+    QOptions,
     check_stability,
     forward_shot,
     source_wavelet,
@@ -35,9 +36,25 @@ class FiniteDifferenceSolver:
 
     name = "fd-two-way"
 
-    def __init__(self, config: SolverConfig) -> None:
+    def __init__(self, config: SolverConfig, q_config: QConfig | None = None) -> None:
         self.config = config
         self.config.validate()
+        self.q_config = q_config or QConfig()
+
+    def q_options(self, *, compensation: bool = False) -> QOptions | None:
+        """黏声引擎的 GSLS 选项；其他引擎返回 None。"""
+        if self.config.engine != "viscoacoustic":
+            return None
+        return QOptions(
+            enabled=True,
+            f_ref=float(self.q_config.f_ref),
+            n_mechanisms=int(self.q_config.n_mechanisms),
+            band_ratio=float(self.q_config.band_ratio),
+            compensation=bool(compensation),
+            alpha_c=float(self.q_config.alpha_c),
+            amplitude_cap=float(self.q_config.amplitude_cap),
+            lowpass_interval=int(self.q_config.lowpass_interval),
+        )
 
     # ---------------------------------------------------------------- 规格
     def spec(self, model: ElasticModel) -> PropagationSpec:
@@ -53,7 +70,7 @@ class FiniteDifferenceSolver:
         ``v_y``。因此这里的四分量 = ``p, vx, vz`` + 记录元数据，用于演示
         井中四分量→共炮点道集的转换链路。
         """
-        if self.config.engine == "acoustic":
+        if self.config.engine in ("acoustic", "viscoacoustic"):
             return ("p",)
         if int(n_components) >= 4:
             return ("p", "vx", "vz", "sxz")
@@ -94,6 +111,7 @@ class FiniteDifferenceSolver:
             spec,
             engine=self.config.engine,
             components=names,
+            q_options=self.q_options(),
         )
         record.meta.update(
             {
@@ -126,6 +144,9 @@ class FiniteDifferenceSolver:
         )
 
 
-def build_solver(config: SolverConfig) -> FiniteDifferenceSolver:
+def build_solver(
+    config: SolverConfig,
+    q_config: QConfig | None = None,
+) -> FiniteDifferenceSolver:
     """求解器工厂（后续可在此按配置选择 GPU/分布式后端）。"""
-    return FiniteDifferenceSolver(config)
+    return FiniteDifferenceSolver(config, q_config)

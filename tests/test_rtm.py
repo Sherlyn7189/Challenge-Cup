@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ertm import numerics as num  # noqa: E402
 from ertm.config import ImagingConfig, QConfig, SolverConfig, load_config  # noqa: E402
-from ertm.imaging import RTMImager, zero_lag_condition  # noqa: E402
+from ertm.imaging import RTMImager, build_imager, zero_lag_condition  # noqa: E402
 from ertm.preprocess import (  # noqa: E402
     mute_direct_wave,
     prepare_shot,
@@ -42,6 +42,11 @@ from ertm.propagation import (  # noqa: E402
     source_wavelet,
 )
 from ertm.qcomp import QCompensator, attenuate_record  # noqa: E402
+from ertm.viscoelastic import (  # noqa: E402
+    estimate_q_spectral_ratio,
+    fit_gsls,
+)
+from ertm.propagation import QOptions, ViscoacousticPropagator, source_wavelet  # noqa: E402
 from ertm.solver import build_solver  # noqa: E402
 from ertm.types import ElasticModel, GridSpec, ReceiverSpec, ShotRecord, SourceSpec  # noqa: E402
 
@@ -357,6 +362,108 @@ class TestQCompensation(unittest.TestCase):
         data = np.random.default_rng(0).normal(size=(128, 3))
         compensator = QCompensator(config=QConfig(enabled=False), q_value=50.0)
         self.assertTrue(np.allclose(compensator(data, 1e-3), data))
+
+
+class TestGSLSViscoacoustic(unittest.TestCase):
+    """GSLS 记忆变量黏声正演与反传补偿。"""
+
+    def test_constant_q_fit_over_band(self) -> None:
+        params = fit_gsls(40.0, 25.0, n_mechanisms=3, band_ratio=1.5)
+        freqs = np.geomspace(25.0 / 1.5, 25.0 * 1.5, 9)
+        quality = params.quality(freqs)
+        deviation = np.max(np.abs(quality / 40.0 - 1.0))
+        self.assertLess(deviation, 0.02, f"常 Q 拟合偏差 {deviation:.3f}")
+        self.assertGreater(params.k_unrelaxed, 1.0)
+        self.assertLess(params.k_unrelaxed, 1.2)
+
+    def test_single_mechanism_peaks_at_reference_frequency(self) -> None:
+        params = fit_gsls(40.0, 25.0, n_mechanisms=1)
+        self.assertAlmostEqual(float(params.quality([25.0])[0]), 40.0, delta=0.5)
+        self.assertGreater(float(params.quality([10.0])[0]), 40.0)
+
+    def test_viscoacoustic_measures_target_q(self) -> None:
+        grid = GridSpec(nx=141, nz=121, dx=10.0, dz=10.0)
+        shape = grid.shape
+        model = ElasticModel(
+            grid=grid,
+            vp=np.full(shape, 3000.0, dtype=np.float32),
+            vs=np.full(shape, 1700.0, dtype=np.float32),
+            rho=np.full(shape, 2400.0, dtype=np.float32),
+            qp=np.full(shape, 40.0, dtype=np.float32),
+            qs=np.full(shape, 50.0, dtype=np.float32),
+        )
+        spec = PropagationSpec(dt=4e-4, nt=900, order=8, npml=12, dtype="float64", boundary="cpml")
+        source = SourceSpec(x=600.0, z=600.0, f0=25.0, delay=0.03)
+        receivers = ReceiverSpec(x=np.array([800.0, 1000.0]), z=np.array([600.0, 600.0]))
+        prop = ViscoacousticPropagator(
+            model, spec, q_options=QOptions(enabled=True, f_ref=25.0)
+        )
+        prop.set_source(source)
+        prop.set_receivers(receivers)
+        wave = source_wavelet(source, spec.dt, spec.nt)
+        data = np.zeros((spec.nt, receivers.nrec))
+        for step in range(spec.nt):
+            prop.step(float(wave[step]))
+            data[step] = prop.sample(("p",))["p"]
+
+        def windowed_spectrum(trace: np.ndarray, offset: float) -> np.ndarray:
+            start = max(int((source.delay + offset / 3000.0) / spec.dt) - 100, 0)
+            segment = trace[start : start + 400] * np.hanning(400)
+            return np.abs(np.fft.rfft(segment))
+
+        freqs = np.fft.rfftfreq(400, spec.dt)
+        s1 = windowed_spectrum(data[:, 0], 200.0)
+        s2 = windowed_spectrum(data[:, 1], 400.0)
+        band = (freqs > 5) & (freqs < 60)
+        slope = np.polyfit(
+            freqs[band], np.log(s1[band] / s2[band]) + 0.5 * np.log(2.0), 1
+        )[0]
+        measured = float(np.pi * (400.0 - 200.0) / 3000.0 / max(slope, 1e-12))
+        self.assertLess(abs(measured / 40.0 - 1.0), 0.2, f"测得 Q={measured:.1f}，目标 40")
+
+    def test_compensation_recovers_deep_amplitude(self) -> None:
+        def migrate(alpha_c: float) -> float:
+            grid = GridSpec(nx=121, nz=101, dx=10.0, dz=10.0)
+            shape = grid.shape
+            z = np.arange(grid.nz) * grid.dz
+            vp = np.where(z[:, None] < 600.0, 3000.0, 4200.0) + 0.0 * np.arange(grid.nx)[None, :]
+            qp_node = np.where(z[:, None] < 600.0, 60.0, 15.0) + 0.0 * np.arange(grid.nx)[None, :]
+            model = ElasticModel(
+                grid=grid,
+                vp=vp.astype(np.float32),
+                vs=np.full(shape, 1700.0, dtype=np.float32),
+                rho=np.full(shape, 2400.0, dtype=np.float32),
+                qp=qp_node.astype(np.float32),
+                qs=np.full(shape, 50.0, dtype=np.float32),
+            )
+            solver = SolverConfig(
+                # 记录长度必须覆盖 600 m 界面的双程走时，否则测的是浅部假象
+                nt=1500, dt=4e-4, order=8, boundary="free",
+                dtype="float32", engine="viscoacoustic", npml=12,
+            )
+            spec = PropagationSpec.from_config(solver, model)
+            source = SourceSpec(x=600.0, z=20.0, f0=20.0, delay=0.06)
+            x = np.linspace(0.0, 1200.0, 81)
+            receivers = ReceiverSpec(x=x, z=np.full_like(x, 20.0), component="p")
+            shot = forward_shot(model, source, receivers, spec, engine="viscoacoustic")
+            shot = prepare_shot(shot, model=model, mute=True, v_reference=3000.0)
+            q = QConfig(enabled=alpha_c > 0.0, model="gsls", alpha_c=max(alpha_c, 0.0))
+            image = build_imager(
+                ImagingConfig(
+                    condition="normalized", laplacian=True,
+                    lowpass_fraction=0.85, checkpoint_mb=64.0,
+                ),
+                solver,
+                q,
+            ).migrate(shot, model)
+            magnitude = np.abs(image.image)
+            # 600 m 界面对应的能量窗口（±50 m）
+            return float(np.sqrt((magnitude[55:65, :] ** 2).mean()))
+
+        baseline = migrate(0.0)
+        compensated = migrate(1.0)
+        self.assertGreater(compensated, 1.15 * baseline,
+                           f"补偿未提升深部振幅: {baseline:.3e} -> {compensated:.3e}")
 
 
 class TestPreprocessing(unittest.TestCase):

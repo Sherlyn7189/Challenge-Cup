@@ -1,0 +1,136 @@
+{
+  "project": {
+    "name": "ERTM Viscoacoustic GSLS",
+    "version": "0.3.0"
+  },
+  "grid": {
+    "nx": 141,
+    "nz": 121,
+    "dx": 10.0,
+    "dz": 10.0,
+    "x0": 0.0,
+    "z0": 0.0
+  },
+  "model": {
+    "background_vp": 3000.0,
+    "background_vs": 1700.0,
+    "background_rho": 2400.0,
+    "background_qp": 100.0,
+    "background_qs": 50.0,
+    "layers": [
+      {
+        "z_top": 0.0,
+        "vp": 3000.0,
+        "vs": 1600.0,
+        "rho": 2400.0,
+        "qp": 60.0,
+        "qs": 30.0
+      },
+      {
+        "z_top": 500.0,
+        "vp": 3600.0,
+        "vs": 1900.0,
+        "rho": 2450.0,
+        "qp": 25.0,
+        "qs": 15.0
+      },
+      {
+        "z_top": 900.0,
+        "vp": 4200.0,
+        "vs": 2200.0,
+        "rho": 2500.0,
+        "qp": 15.0,
+        "qs": 10.0
+      }
+    ],
+    "anomaly": {
+      "kind": "cave",
+      "x": 700.0,
+      "z": 720.0,
+      "rx": 50.0,
+      "rz": 35.0,
+      "dip": 0.0,
+      "vp": 2400.0,
+      "vs": 1200.0,
+      "rho": 2200.0,
+      "qp": 10.0,
+      "qs": 8.0
+    }
+  },
+  "source": {
+    "x": 700.0,
+    "z": 20.0,
+    "f0": 20.0,
+    "kind": "ricker",
+    "amplitude": 1.0,
+    "delay": 0.06,
+    "mechanism": "explosive"
+  },
+  "receivers": {
+    "count": 141,
+    "x_start": 0.0,
+    "x_end": 1400.0,
+    "z": 20.0,
+    "component": "p"
+  },
+  "acquisition": {
+    "geometry": "surface",
+    "components": 1,
+    "record_dt": null,
+    "rotation_deg": 0.0,
+    "mute_direct": true,
+    "shots": [
+      500.0,
+      700.0,
+      900.0
+    ],
+    "borehole_x": 0.0,
+    "borehole_z_start": 0.0,
+    "borehole_z_end": 1000.0
+  },
+  "solver": {
+    "nt": 1500,
+    "dt": 0.0004,
+    "order": 8,
+    "boundary": "free",
+    "dtype": "float32",
+    "engine": "viscoacoustic",
+    "npml": 12
+  },
+  "imaging": {
+    "mode": "pp",
+    "condition": "normalized",
+    "separation": "divcurl",
+    "normalize": true,
+    "illumination": true,
+    "receiver_normalization": false,
+    "laplacian": true,
+    "lowpass_fraction": 0.85,
+    "checkpoint_mb": 128.0,
+    "eps": 1e-10,
+    "stack_normalize": true,
+    "start_periods": 1.5
+  },
+  "q": {
+    "enabled": true,
+    "model": "gsls",
+    "alpha_c": 0.9,
+    "f_ref": 30.0,
+    "gain_cap": 30.0,
+    "apply_attenuation": false,
+    "attenuation_strength": 1.0,
+    "n_mechanisms": 3,
+    "band_ratio": 1.5,
+    "amplitude_cap": 50.0,
+    "lowpass_interval": 20
+  },
+  "output": {
+    "root": "output/viscoacoustic",
+    "save_figures": true,
+    "save_data": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file_name": "ertm.log"
+  }
+}

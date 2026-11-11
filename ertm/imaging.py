@@ -28,12 +28,13 @@ from typing import Any, Callable
 import numpy as np
 
 from . import numerics as num
-from .config import ImagingConfig, SolverConfig
+from .config import ImagingConfig, QConfig, SolverConfig
 from .exceptions import ImagingError
 from .logging_utils import get_logger
 from .propagation import (
     PropagationSpec,
     Propagator2D,
+    QOptions,
     build_propagator,
     check_stability,
     source_wavelet,
@@ -50,7 +51,7 @@ WAVE_MODES: dict[str, tuple[str, str]] = {
     "ss": ("S", "S"),
 }
 
-#: 声波引擎只支持 PP
+#: 声波/黏声引擎只支持 PP
 _ACOUSTIC_MODES = {"pp"}
 
 
@@ -173,12 +174,30 @@ class RTMImager:
         self,
         imaging_config: ImagingConfig,
         solver_config: SolverConfig | None = None,
+        q_config: QConfig | None = None,
     ) -> None:
         self.config = imaging_config
         self.config.validate()
         self.solver_config = solver_config or SolverConfig()
         self.solver_config.validate()
+        self.q_config = q_config or QConfig()
+        self.q_config.validate()
         self._validate_engine_mode()
+
+    def q_options(self, *, compensation: bool = False) -> QOptions | None:
+        """黏声引擎的 GSLS 选项（反传时 ``compensation=True``）。"""
+        if self.solver_config.engine != "viscoacoustic":
+            return None
+        return QOptions(
+            enabled=True,
+            f_ref=float(self.q_config.f_ref),
+            n_mechanisms=int(self.q_config.n_mechanisms),
+            band_ratio=float(self.q_config.band_ratio),
+            compensation=bool(compensation and self.q_config.enabled),
+            alpha_c=float(self.q_config.alpha_c),
+            amplitude_cap=float(self.q_config.amplitude_cap),
+            lowpass_interval=int(self.q_config.lowpass_interval),
+        )
 
     # ------------------------------------------------------------- public API
     def migrate(
@@ -226,14 +245,16 @@ class RTMImager:
             shot.receivers.nrec,
         )
 
-        prop = build_propagator(model, spec, engine=engine)
+        forward_q = self.q_options(compensation=False)
+        backward_q = self.q_options(compensation=True)
+        prop = build_propagator(model, spec, engine=engine, q_options=forward_q)
         prop.set_source(shot.source)
         prop.set_receivers(shot.receivers)
         store = record_source_wavefield(
             prop, wavelet, budget_mb=float(self.config.checkpoint_mb)
         )
 
-        back = build_propagator(model, spec, engine=engine)
+        back = build_propagator(model, spec, engine=engine, q_options=backward_q)
         back.set_source(shot.source)
         back.set_receivers(shot.receivers)
 
@@ -346,11 +367,11 @@ class RTMImager:
     # ---------------------------------------------------------------- helpers
     def _validate_engine_mode(self) -> None:
         if (
-            self.solver_config.engine == "acoustic"
+            self.solver_config.engine in ("acoustic", "viscoacoustic")
             and self.config.mode not in _ACOUSTIC_MODES
         ):
             raise ImagingError(
-                f"声波引擎只支持 PP 成像，当前 imaging.mode={self.config.mode!r}；"
+                f"声波/黏声引擎只支持 PP 成像，当前 imaging.mode={self.config.mode!r}；"
                 "多波型成像请设置 solver.engine='elastic'"
             )
 
@@ -515,6 +536,7 @@ class RTMImager:
 def build_imager(
     config: ImagingConfig,
     solver_config: SolverConfig | None = None,
+    q_config: QConfig | None = None,
 ) -> RTMImager:
     """成像器工厂。"""
-    return RTMImager(config, solver_config)
+    return RTMImager(config, solver_config, q_config)

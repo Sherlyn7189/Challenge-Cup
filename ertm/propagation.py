@@ -126,6 +126,32 @@ def check_stability(model: ElasticModel, spec: PropagationSpec, *, safety: float
         )
 
 
+@dataclass(frozen=True)
+class QOptions:
+    """黏声传播（GSLS）与反传补偿的选项。"""
+
+    enabled: bool = False
+    f_ref: float = 30.0
+    n_mechanisms: int = 3
+    band_ratio: float = 1.5
+    compensation: bool = False
+    alpha_c: float = 1.0
+    amplitude_cap: float = 50.0
+    lowpass_interval: int = 20
+
+    def validate(self) -> None:
+        if self.f_ref <= 0:
+            raise ValueError("q.f_ref 必须为正")
+        if int(self.n_mechanisms) < 1:
+            raise ValueError("q.n_mechanisms 至少为 1")
+        if self.band_ratio <= 1.0:
+            raise ValueError("q.band_ratio 必须 > 1")
+        if not 0.0 <= self.alpha_c <= 1.0:
+            raise ValueError("q.alpha_c 必须在 [0, 1] 内")
+        if self.amplitude_cap < 1.0:
+            raise ValueError("q.amplitude_cap 必须 ≥ 1")
+
+
 # ----------------------------------------------------------------------------
 # 公共基类
 # ----------------------------------------------------------------------------
@@ -295,6 +321,46 @@ class Propagator2D:
         raise NotImplementedError
 
     # -------------------------------------------------------------- helpers
+    def _add_at_nodes(
+        self,
+        field: np.ndarray,
+        values: np.ndarray,
+        component: str,
+        scale: np.ndarray | float = 1.0,
+    ) -> None:
+        """把道数据按双线性权重累加到场的检波点位置（反传注入用）。"""
+        if self._receivers is None:
+            raise SolverError("注入数据前必须设置检波点")
+        x_offset, z_offset = {
+            "vx": (-0.5, 0.0),
+            "vz": (0.0, -0.5),
+            "sxz": (-0.5, -0.5),
+        }.get(component, (0.0, 0.0))
+        z_index, x_index = self.fractional_index(
+            self._receivers.x, self._receivers.z, x_offset=x_offset, z_offset=z_offset
+        )
+        z0 = np.floor(z_index).astype(np.int64)
+        x0 = np.floor(x_index).astype(np.int64)
+        tz = z_index - z0
+        tx = x_index - x0
+        nz, nx = self.shape
+        valid = (z0 >= 0) & (z0 < nz - 1) & (x0 >= 0) & (x0 < nx - 1)
+        zc = np.clip(z0, 0, nz - 2)
+        xc = np.clip(x0, 0, nx - 2)
+        values = np.asarray(values, dtype=self.dtype)
+        if np.ndim(scale):
+            factor = np.asarray(scale, dtype=self.dtype)[zc[valid], xc[valid]]
+        else:
+            factor = np.float32(scale)
+        weight00 = (1 - tz[valid]) * (1 - tx[valid]) * factor
+        weight01 = (1 - tz[valid]) * tx[valid] * factor
+        weight10 = tz[valid] * (1 - tx[valid]) * factor
+        weight11 = tz[valid] * tx[valid] * factor
+        np.add.at(field, (zc[valid], xc[valid]), values[valid] * weight00)
+        np.add.at(field, (zc[valid], xc[valid] + 1), values[valid] * weight01)
+        np.add.at(field, (zc[valid] + 1, xc[valid]), values[valid] * weight10)
+        np.add.at(field, (zc[valid] + 1, xc[valid] + 1), values[valid] * weight11)
+
     def _sample_field(
         self,
         field: np.ndarray,
@@ -429,6 +495,251 @@ class AcousticPropagator(Propagator2D):
     @property
     def max_amplitude(self) -> float:
         return float(np.max(np.abs(self.p)))
+
+
+# ----------------------------------------------------------------------------
+# 黏声波：一阶速度—压力 + GSLS 记忆变量
+# ----------------------------------------------------------------------------
+class ViscoacousticPropagator(Propagator2D):
+    """黏声（GSLS）一阶速度—压力系统。
+
+    与 :class:`AcousticPropagator` 的唯一区别是**本构关系**：压力不再由
+    ``p += Δt κ ∇·v`` 直接积分，而是按技术方案 2.4.1 的记忆变量形式::
+
+        ε^{n+1} = ε^n + Δt ∇·v
+        r_l^{n+1} = a_l r_l^n + b_l (ε^{n+1} - ε^n)
+        p^{n+1} = K_R ε^{n+1} + Σ_l r_l^{n+1}
+
+    参数 ``a_l, b_l, K_U`` 由 :func:`ertm.viscoelastic.fit_gsls` 按模型中的
+    每个 Q 值拟合得到，因此同一模型里不同层可以有不同 Q。
+
+    反传补偿
+    --------
+    ``q_options.compensation=True`` 时把 ``Δ_l`` 乘以 ``-α_c``：本构变成
+    “增益”，即 Q 的逆过程（技术方案 6.4.1）。指数增长由两道保险控制：
+    时变低通（每 ``lowpass_interval`` 步一次）与振幅上限 ``amplitude_cap``。
+    """
+
+    name = "viscoacoustic-gsls"
+    components = ("p", "vx", "vz")
+
+    def __init__(
+        self,
+        model: ElasticModel,
+        spec: PropagationSpec,
+        *,
+        q_options: QOptions | None = None,
+    ) -> None:
+        super().__init__(model, spec)
+        self.q_options = q_options or QOptions(enabled=True)
+        self.q_options.validate()
+
+        rho = _pad(model.rho, self.pad, self.dtype)
+        vp = _pad(model.vp, self.pad, self.dtype)
+        qp = _pad(model.qp, self.pad, self.dtype)
+        self.kappa_relaxed = (rho * vp * vp).astype(self.dtype)
+        inv_rho = (1.0 / rho).astype(self.dtype)
+        self.inv_rho_x = _mean_x(inv_rho, self.dtype)
+        self.inv_rho_z = _mean_z(inv_rho, self.dtype)
+        self.rho = rho
+
+        self._build_relaxation(qp)
+        zeros = lambda: np.zeros(self.shape, dtype=self.dtype)  # noqa: E731
+        self.p = zeros()
+        self.vx = zeros()
+        self.vz = zeros()
+        self.eps = zeros()
+        self.r = np.zeros((self.n_mechanisms,) + self.shape, dtype=self.dtype)
+        self._reference_amplitude = 0.0
+
+    # ------------------------------------------------------------------ 参数
+    def _build_relaxation(self, qp: np.ndarray) -> None:
+        """按模型中出现的 Q 值拟合 GSLS，并装配成逐点系数数组。"""
+        from .viscoelastic import fit_gsls
+
+        n = int(self.q_options.n_mechanisms)
+        self.n_mechanisms = n
+        values = np.clip(
+            np.asarray(qp, dtype=np.float64).ravel(), 2.5, 1.0e5
+        )
+        unique = np.unique(values)
+        if unique.size > 32:  # 极端非均质 Q：用中位数拟合一套参数
+            unique = np.array([float(np.median(values))])
+        fit_error = 0.0
+        index = np.zeros(values.shape, dtype=np.int64)
+        tau_sigma = np.zeros((unique.size, n))
+        delta = np.zeros((unique.size, n))
+        modulus_ref = np.zeros(unique.size)
+        for i, value in enumerate(unique):
+            if value > 1.0e4:
+                tau_sigma[i, :] = 1.0e-3
+                delta[i, :] = 0.0
+                modulus_ref[i] = 1.0
+            else:
+                params = fit_gsls(
+                    float(value),
+                    self.q_options.f_ref,
+                    n_mechanisms=n,
+                    band_ratio=self.q_options.band_ratio,
+                )
+                fit_error = max(fit_error, params.fit_error)
+                tau = np.asarray(params.tau_sigma, dtype=np.float64)
+                dlt = np.asarray(params.delta, dtype=np.float64)
+                tau_sigma[i, : tau.size] = tau
+                if tau.size < n:
+                    tau_sigma[i, tau.size :] = tau[-1]
+                delta[i, : dlt.size] = dlt
+                from .viscoelastic import normalized_modulus
+
+                modulus_ref[i] = float(
+                    np.real(
+                        normalized_modulus(tau, dlt, [self.q_options.f_ref])[0]
+                    )
+                )
+        index = np.searchsorted(unique, values).reshape(self.shape)
+        sign = -1.0 if self.q_options.compensation else 1.0
+        scale = self.q_options.alpha_c if self.q_options.compensation else 1.0
+
+        tau_node = tau_sigma[index]  # (nz, nx, n)
+        delta_node = delta[index] * (sign * scale)
+        k_relaxed = (self.kappa_relaxed / modulus_ref[index]).astype(self.dtype)
+
+        self.tau_sigma = np.moveaxis(tau_node, -1, 0)
+        self.delta = np.moveaxis(delta_node, -1, 0)
+        self.k_relaxed = k_relaxed
+        self.k_unrelaxed = (
+            k_relaxed * (1.0 + np.sum(np.moveaxis(delta_node, -1, 0), axis=0))
+        ).astype(self.dtype)
+        self.a = np.exp(-self.dt / self.tau_sigma).astype(self.dtype)
+        self.b = (
+            k_relaxed[None, :, :]
+            * self.delta
+            * (1.0 - self.a)
+            * self.tau_sigma
+            / self.dt
+        ).astype(self.dtype)
+        self.q_fit_error = float(fit_error)
+        logger.debug(
+            "黏声参数装配: L=%d, unique Q=%d, k_u/k_r=%.3f, 拟合误差=%.2e",
+            n,
+            unique.size,
+            float(np.mean(self.k_unrelaxed / np.maximum(k_relaxed, 1e-30))),
+            fit_error,
+        )
+
+    def reset(self) -> None:
+        for name in ("p", "vx", "vz", "eps"):
+            getattr(self, name).fill(0.0)
+        self.r.fill(0.0)
+        self._reference_amplitude = 0.0
+        self.pml = self._make_pml()
+        self.step_index = 0
+
+    # ------------------------------------------------------------------ 步进
+    def step(self, source_amplitude: float = 0.0) -> None:
+        dt = self.dt
+        order, dx, dz = self.order, self.dx, self.dz
+        pml = self.pml
+
+        self.vx += dt * self.inv_rho_x * pml.derivative(
+            "vx_dp_dx", self.p, axis=1, forward=True, order=order, spacing=dx
+        )
+        self.vz += dt * self.inv_rho_z * pml.derivative(
+            "vz_dp_dz", self.p, axis=0, forward=True, order=order, spacing=dz
+        )
+        divergence = pml.derivative(
+            "p_dvx_dx", self.vx, axis=1, forward=False, order=order, spacing=dx
+        )
+        divergence += pml.derivative(
+            "p_dvz_dz", self.vz, axis=0, forward=False, order=order, spacing=dz
+        )
+        increment = (dt * divergence).astype(self.dtype, copy=False)
+        self.eps += increment
+
+        # 记忆变量与应力（顺序不可交换，技术方案 3.2.3）
+        self.r *= self.a
+        self.r += self.b * increment[None, :, :]
+        total = self.r.sum(axis=0)
+        np.add(self.k_relaxed * self.eps, total, out=self.p)
+
+        if source_amplitude != 0.0 and self._source_index is not None:
+            iz, ix = self._source_index
+            # 压力源等价于注入体应变，保证与声波求解器的软源一致
+            self.eps[iz, ix] += self.dtype.type(
+                source_amplitude / float(self.k_relaxed[iz, ix])
+            )
+            self.p[iz, ix] += self.dtype.type(source_amplitude)
+
+        self._apply_boundary()
+        if self.q_options.compensation:
+            self._stabilize()
+        self.step_index += 1
+
+    # --------------------------------------------------------------- 稳定化
+    def _stabilize(self) -> None:
+        peak = float(np.max(np.abs(self.p)))
+        if self.step_index < 30:
+            self._reference_amplitude = max(self._reference_amplitude, peak)
+            return
+        reference = max(self._reference_amplitude, 1e-30)
+        limit = self.q_options.amplitude_cap * reference
+        if peak > limit:
+            scale = self.dtype.type(limit / peak)
+            self.p *= scale
+            self.eps *= scale
+            self.vx *= scale
+            self.vz *= scale
+            self.r *= scale
+            self._clipped = getattr(self, "_clipped", 0) + 1
+        interval = int(self.q_options.lowpass_interval)
+        if interval > 1 and self.step_index % interval == 0:
+            time = self.step_index * self.dt
+            ratio = max(0.9 - 0.4 * min(time / 1.0, 1.0), 0.35)
+            self.p[:] = num.lowpass_wavenumber(self.p, dx=self.dx, dz=self.dz,
+                                               cutoff_fraction=ratio)
+            self.eps[:] = num.lowpass_wavenumber(self.eps, dx=self.dx, dz=self.dz,
+                                                 cutoff_fraction=ratio)
+
+    def sample(self, components: tuple[str, ...] | None = None) -> dict[str, np.ndarray]:
+        if self._receivers is None:
+            return {}
+        names = components or ("p",)
+        fields = {"p": self.p, "vx": self.vx, "vz": self.vz}
+        out: dict[str, np.ndarray] = {}
+        for name in names:
+            field = fields.get(name)
+            if field is None:
+                raise SolverError(f"黏声传播器不支持分量 {name!r}，可选 {self.components}")
+            out[name] = self._sample_field(field, name, self._receivers)
+        return out
+
+    def inject(self, component: str, values: np.ndarray) -> None:
+        if self._receivers is None:
+            raise SolverError("注入数据前必须设置检波点")
+        field = {"p": self.p, "vx": self.vx, "vz": self.vz}.get(component)
+        if field is None:
+            raise SolverError(f"黏声传播器无法注入分量 {component!r}")
+        self._add_at_nodes(field, values, component)
+        if component == "p":
+            # 压力注入必须同时写入体应变，否则下一步 p 由 (ε, r) 重算时会被抹掉
+            scale = 1.0 / np.maximum(np.abs(self.k_relaxed), 1e-20)
+            self._add_at_nodes(self.eps, values, component, scale=scale)
+
+    def image_fields(self, separation: str = "stress") -> dict[str, np.ndarray]:
+        return {"P": self._crop(self.p)}
+
+    def _field_names(self) -> tuple[str, ...]:
+        return ("p", "vx", "vz", "eps", "r")
+
+    @property
+    def quality_summary(self) -> dict[str, Any]:
+        return {
+            "mechanisms": int(self.n_mechanisms),
+            "q_fit_error": float(self.q_fit_error),
+            "compensation": bool(self.q_options.compensation),
+            "alpha_c": float(self.q_options.alpha_c),
+            "clipped": int(getattr(self, "_clipped", 0)),
+        }
 
 
 # ----------------------------------------------------------------------------
@@ -622,14 +933,17 @@ def build_propagator(
     spec: PropagationSpec,
     *,
     engine: str = "acoustic",
+    q_options: QOptions | None = None,
 ) -> Propagator2D:
-    """按 ``engine`` 构造传播器（``acoustic`` / ``elastic``）。"""
+    """按 ``engine`` 构造传播器（``acoustic`` / ``viscoacoustic`` / ``elastic``）。"""
     engine = str(engine).lower()
     if engine == "acoustic":
         return AcousticPropagator(model, spec)
+    if engine == "viscoacoustic":
+        return ViscoacousticPropagator(model, spec, q_options=q_options)
     if engine == "elastic":
         return ElasticPropagator(model, spec)
-    raise SolverError(f"未知的延拓引擎 {engine!r}，可选 acoustic/elastic")
+    raise SolverError(f"未知的延拓引擎 {engine!r}，可选 acoustic/viscoacoustic/elastic")
 
 
 def source_wavelet(source: SourceSpec, dt: float, nt: int) -> np.ndarray:
@@ -657,13 +971,16 @@ def run_forward(
     wavelet: np.ndarray | None = None,
     propagator: Propagator2D | None = None,
     record_every: int = 1,
+    q_options: QOptions | None = None,
 ) -> dict[str, np.ndarray]:
     """执行一次正演，返回 ``{分量: (nt, nrec)}``。
 
     ``wavelet`` 给定时按其长度决定步数（用于与实测记录对齐）；否则用
     :func:`source_wavelet` 生成 ``spec.nt`` 个采样。
     """
-    prop = propagator or build_propagator(model, spec, engine=engine)
+    prop = propagator or build_propagator(
+        model, spec, engine=engine, q_options=q_options
+    )
     prop.set_source(source)
     prop.set_receivers(receivers)
     if wavelet is None:
@@ -688,10 +1005,13 @@ def forward_shot(
     *,
     engine: str = "acoustic",
     components: tuple[str, ...] | None = None,
+    q_options: QOptions | None = None,
 ) -> ShotRecord:
     """正演并封装为 :class:`~ertm.types.ShotRecord`（主分量为第一个分量）。"""
-    names = components or (("p",) if engine == "acoustic" else ("vx", "vz", "sxz"))
-    data = run_forward(model, source, receivers, spec, engine=engine, components=names)
+    names = components or (("p",) if engine in ("acoustic", "viscoacoustic") else ("vx", "vz", "sxz"))
+    data = run_forward(
+        model, source, receivers, spec, engine=engine, components=names, q_options=q_options
+    )
     primary = names[0]
     t = np.arange(data[primary].shape[0], dtype=np.float64) * spec.dt
     meta: dict[str, Any] = {

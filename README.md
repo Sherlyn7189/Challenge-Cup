@@ -114,12 +114,27 @@ SeismicProjectERTM/
 3. **直达波切除**：`t_mute = delay + 1.2/f0 + 1.05·|x − x_s|/v_ref`，余弦过渡；
 4. **首尾 taper**：压制记录截断引起的边界反射。
 
-### 4.4 Q 衰减与补偿（`qcomp.py`）
+### 4.4 Q 衰减与补偿（`qcomp.py` + `viscoelastic.py`）
 
-- 衰减频响 `H(f,t) = exp(−πft/Q)·exp(iφ)`，`φ = −(2ft/Q)ln(f/f_ref)`，
-  振幅与相位可分别开关（“解耦”）；
-- 补偿在**反传边界条件**上：增益指数乘 `α_c`、上限 `gain_cap`、叠加时变
-  低通，满足技术方案 6.4.4「只补偿检波点侧」与 7.4 的稳定化要求。
+两种模式，由 `q.model` 选择：
+
+- **`filter`（数据域）**：频响 `H(f,t) = exp(−πft/Q)·exp(iφ)`，
+  `φ = −(2ft/Q)ln(f/f_ref)`，振幅/相位可分别开关；补偿作用在反传边界条件上
+  （增益指数乘 `α_c`、上限 `gain_cap`、时变低通）。
+- **`gsls`（传播算子内，推荐）**：`solver.engine="viscoacoustic"` 使用一阶
+  速度—压力 + GSLS 记忆变量：
+
+  ```text
+  εⁿ⁺¹ = εⁿ + Δt∇·v
+  r_lⁿ⁺¹ = a_l r_lⁿ + b_l(εⁿ⁺¹ − εⁿ)
+  pⁿ⁺¹ = K_R εⁿ⁺¹ + Σ_l r_lⁿ⁺¹
+  a_l = exp(−Δt/τ^σ_l),  b_l = K_R Δ_l (1−a_l) τ^σ_l/Δt
+  ```
+
+  `τ^σ_l、Δ_l` 由 `fit_gsls` 对目标 Q 做常 Q 频带拟合（L=3 时 0.67–1.5 倍频带内
+  Q 偏差 < 1e-4）；模型里每个 Q 值单独拟合，逐点装配 `a_l, b_l, K_R`，因此
+  分层/异常体可以有不同 Q。补偿时把 `Δ_l` 乘 `−α_c`（Q 的逆过程），用
+  振幅上限 `amplitude_cap` 与时变低通 `lowpass_interval` 两道保险稳定指数增长。
 
 ## 5. 关键配置（`config/default.json`）
 
@@ -132,7 +147,7 @@ SeismicProjectERTM/
 | `acquisition` | `geometry, components, record_dt, rotation_deg, shots` | 观测系统、四分量、实测采样率、多炮 |
 | `solver` | `nt, dt, order, boundary, engine, npml` | 时间步、阶数、边界、声波/弹性引擎 |
 | `imaging` | `mode, condition, separation, laplacian, checkpoint_mb` | 成像条件与后处理 |
-| `q` | `enabled, alpha_c, gain_cap, apply_attenuation` | Q 补偿强度与是否叠加衰减 |
+| `q` | `enabled, model, alpha_c, gain_cap, n_mechanisms, amplitude_cap` | Q 模式（filter/gsls）、补偿强度与稳定化 |
 
 `dt` 必须满足 `dt ≤ 0.5/(v_max·√((C/dx)² + (C/dz)²))`；不满足时求解器
 直接报错并给出建议值（而不是静默降精度）。
@@ -142,7 +157,9 @@ SeismicProjectERTM/
 - `config/default.json`：地面观测、声波、三炮（x = 700/1000/1300 m），
   层状模型 + 溶洞，`condition=normalized`，约 15 s 出图；
 - `config/borehole_4c.json`：井中四分量、弹性波、PP/PS 成像、Q 补偿，
-  用于演示第 ②③④ 项关键技术（运行时间明显更长）。
+  用于演示第 ②③④ 项关键技术（运行时间明显更长）；
+- `config/viscoacoustic.json`：GSLS 黏声正演 + 伴随内 Q 补偿（α_c=0.9），
+  三炮、141×121 网格，约 19 s，可对照 `q.enabled=false` 观察深部振幅恢复。
 
 ## 7. 测试与验证
 
@@ -163,8 +180,8 @@ SeismicProjectERTM/
 ## 8. 已知边界（下一阶段）
 
 - 二维 P-SV，未做三维与 SH；四分量中的水平横向分量在二维下不参与；
-- 黏弹正演目前用频域 Q 算子模拟衰减，未实现 GSLS 记忆变量；
-  补偿是数据域（反传边界条件）的时变增益 + 低通，而非伴随算子内的 GSLS；
+- GSLS 黏声正演/补偿只覆盖 P 波（体积模量松弛）；弹性波的 K、μ 双松弛
+  （技术方案 2.4.1 的完整黏弹系统）尚未实现，PS 成像仍用弹性引擎；
 - 未使用 GPU/Numba，大网格需按 `checkpoint_mb` 调整内存；
 - 逆散射成像条件、角度域道集、LSRTM 未实现。
 

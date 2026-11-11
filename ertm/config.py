@@ -27,7 +27,7 @@ _VALID_ORDERS = {2, 4, 6, 8}
 _VALID_BOUNDARIES = {"cpml", "free", "none"}
 _VALID_MODES = {"pp", "ps", "sp", "ss"}
 _VALID_DTYPES = {"float32", "float64"}
-_VALID_ENGINES = {"acoustic", "elastic"}
+_VALID_ENGINES = {"acoustic", "elastic", "viscoacoustic"}
 _VALID_CONDITIONS = {"zero_lag", "normalized", "excitation"}
 _VALID_SEPARATIONS = {"divcurl", "stress"}
 _VALID_GEOMETRIES = {"surface", "borehole"}
@@ -368,11 +368,16 @@ class QConfig:
     """
 
     enabled: bool = False
+    model: str = "filter"
     alpha_c: float = 0.8
     f_ref: float = 30.0
     gain_cap: float = 30.0
     apply_attenuation: bool = False
     attenuation_strength: float = 1.0
+    n_mechanisms: int = 3
+    band_ratio: float = 1.5
+    amplitude_cap: float = 50.0
+    lowpass_interval: int = 20
 
     def validate(self) -> None:
         if not 0.0 <= self.alpha_c <= 1.0:
@@ -383,6 +388,16 @@ class QConfig:
             raise ConfigError("q.gain_cap 必须 ≥ 1")
         if not 0.0 <= self.attenuation_strength <= 1.0:
             raise ConfigError("q.attenuation_strength 必须在 [0, 1] 内")
+        if self.model not in {"filter", "gsls"}:
+            raise ConfigError(f"q.model 必须是 filter 或 gsls，当前 {self.model!r}")
+        if self.n_mechanisms < 1:
+            raise ConfigError("q.n_mechanisms 至少为 1")
+        if self.band_ratio <= 1.0:
+            raise ConfigError("q.band_ratio 必须 > 1")
+        if self.amplitude_cap < 1.0:
+            raise ConfigError("q.amplitude_cap 必须 ≥ 1")
+        if self.lowpass_interval < 1:
+            raise ConfigError("q.lowpass_interval 至少为 1")
 
 
 @dataclass(frozen=True)
@@ -437,6 +452,15 @@ class AppConfig:
         self.output.validate()
         self.logging.validate()
         self._validate_geometry()
+        self._validate_coupling()
+
+    def _validate_coupling(self) -> None:
+        """跨配置段的组合约束。"""
+        if self.q.enabled and self.q.model == "gsls" and self.solver.engine != "viscoacoustic":
+            raise ConfigError(
+                "q.model='gsls' 要求 solver.engine='viscoacoustic'（黏声 GSLS 传播器），"
+                f"当前 solver.engine={self.solver.engine!r}"
+            )
 
     def _validate_geometry(self) -> None:
         """检查源/检波点是否在网格范围内（允许 2 个网格的边界余量）。"""

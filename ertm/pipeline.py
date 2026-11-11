@@ -179,8 +179,8 @@ class ERTMPipeline:
 
         self.data_store = data_store or NumpyDataStore(self.output_root)
         self.model_builder = model_builder or LayeredModelBuilder()
-        self.solver = solver or build_solver(config.solver)
-        self.imager = imager or build_imager(config.imaging, config.solver)
+        self.solver = solver or build_solver(config.solver, config.q)
+        self.imager = imager or build_imager(config.imaging, config.solver, config.q)
         self.visualizer = visualizer or build_visualizer(
             self.data_store.dirs["images"],
             enabled=config.output.save_figures,
@@ -360,7 +360,7 @@ class ERTMPipeline:
             rotation_deg=float(config.acquisition.rotation_deg),
             mute=bool(config.acquisition.mute_direct),
         )
-        if config.q.enabled and config.q.apply_attenuation:
+        if config.q.enabled and config.q.apply_attenuation and config.q.model == "filter":
             q_value = float(np.mean(model.qp))
             processed.data = attenuate_record(
                 np.asarray(processed.data, dtype=np.float64),
@@ -387,6 +387,9 @@ class ERTMPipeline:
     def _build_compensator(self, model: ElasticModel) -> QCompensator | None:
         config = self.config
         if not config.q.enabled:
+            return None
+        # GSLS 模型的补偿在反传算子内部完成（imaging 负责），数据域不再重复补偿
+        if config.q.model == "gsls":
             return None
         wave = "P" if config.imaging.mode in {"pp", "ps"} else "S"
         compensator = build_compensator(

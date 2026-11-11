@@ -18,7 +18,9 @@
 | 弹性一阶速度—应力、P/S 分离（PP/PS/SP/SS） | `ertm/propagation.py` | 已实现（`divcurl` / `stress`） |
 | Q 衰减建模与反传侧补偿（增益缩放 + 时变低通 + 上限） | `ertm/qcomp.py` | 已实现（频域算子形式） |
 | 多炮按炮归一化叠加 | `ertm/pipeline.py::stack_images` | 已实现 |
-| GSLS 记忆变量黏弹正演 | — | 未实现，列入第三阶段 |
+| GSLS 记忆变量黏声正演（P 波） | `ertm/viscoelastic.py`、`ViscoacousticPropagator` | 已实现 |
+| 伴随算子内的 Q 补偿（反传负衰减） | `ViscoacousticPropagator(compensation=True)` | 已实现，含稳定化 |
+| GSLS 弹性（K、μ 双松弛） | — | 未实现，列入第三阶段 |
 | GPU / Numba 加速、三维、各向异性 | — | 未实现 |
 
 ## 2. 离散格式与参数
@@ -77,6 +79,36 @@ excitation : I(x) = A_s(x) · W_r(x, t_exc)                         (激发振�
 约 15 s 完成正演+成像+叠加+出图，成像中 400 m、900 m 界面与 650 m 溶洞均
 可见，最强能量集中在 400 m 界面。
 
+## 4.1 GSLS 黏声正演与 Q 补偿（本轮新增）
+
+本构：``K(t) = K_R[1 − Σ_l Δ_l e^(−t/τ^σ_l)]``，复模量
+``K(ω) = K_R[1 − Σ_l Δ_l/(1+iωτ^σ_l)]``，``Q = Re K/Im K``。离散用
+Robertsson 记忆变量格式（技术方案 2.4.1）：
+
+```text
+εⁿ⁺¹ = εⁿ + Δt∇·v
+r_lⁿ⁺¹ = a_l r_lⁿ + b_l(εⁿ⁺¹ − εⁿ),  a_l = e^(−Δt/τ^σ),  b_l = K_R Δ_l (1−a_l) τ^σ/Δt
+pⁿ⁺¹ = K_R εⁿ⁺¹ + Σ_l r_lⁿ⁺¹
+```
+
+- `fit_gsls` 对目标 Q 做常 Q 频带拟合（`scipy.optimize.least_squares`，
+  变量为 ``ln τ^σ_l, ln Δ_l``）；L=3 时 0.67–1.5 倍频带内 Q 与目标的最大偏差
+  **5e-6**（实测），单机制的解析解在 ``f_ref`` 处 Q 精确等于目标；
+- 模型里每个出现的 Q 值单独拟合，再按点装配系数数组，因此分层/异常体可以有
+  不同 Q；超过 32 个不同 Q 值时退化为中位数（避免逐点拟合的开销）；
+- 压力源注入等价于注入体应变（``ε += s/K_R``），与声波求解器的软源一致；
+- 补偿：``Δ_l → −α_c Δ_l``，即 Q 的逆过程；指数增长由
+  ``amplitude_cap``（振幅上限）与每 ``lowpass_interval`` 步一次的时变低通控制。
+
+**验证**（`tests/test_rtm.py::TestGSLSViscoacoustic`）：
+
+| 项目 | 判据 | 实测 |
+|---|---|---|
+| 常 Q 拟合 | 频带内偏差 < 2% | 3 机制偏差 5e-6 |
+| 单机制峰值 | Q(f_ref)=目标 | 40.0（1 机制） |
+| 衰减后测 Q（同炮两接收点谱比） | 偏差 < 20% | 42.4（目标 40） |
+| 反传补偿 | 600 m 界面能量提升 > 15% | 2.4 倍 |
+
 ## 5. 井中四分量演示（`config/borehole_4c.json`）
 
 - 观测：源在地面 x=100 m，61 级三分量检波器布于 x=1000 m 井中（z=100–1300 m）；
@@ -105,12 +137,12 @@ VSP-RTM 的固有特点（可通过多方位炮、逆散射条件、照明补偿
 .venv\Scripts\python.exe -m unittest tests.test_structure -v   # 7 项契约测试
 .venv\Scripts\python.exe main.py                               # 声波三炮演示
 .venv\Scripts\python.exe main.py --config config/borehole_4c.json --output output/borehole
+.venv\Scripts\python.exe main.py --config config/viscoacoustic.json   # GSLS 黏声 + Q 补偿
 ```
 
 ## 8. 已知边界（第三阶段建议）
 
-1. 黏弹正演用频域 Q 算子近似，未实现 GSLS 记忆变量；补偿是反传边界条件上的
-   时变增益 + 低通，而非伴随算子内的真实 Q 逆过程；
+1. GSLS 只覆盖 P 波（体积模量松弛）；弹性波的 K、μ 双松弛与 PS 的 Qs 路径未实现；
 2. 井中 demo 照明不足，需多方位炮 + 照明补偿 + 逆散射成像条件；
 3. `σ_xz` 的 P 波污染说明 `stress` 分离不能作为 S 波主传播器；
 4. 三维、各向异性、自由表面精确镜像（含记忆变量）均未实现；
