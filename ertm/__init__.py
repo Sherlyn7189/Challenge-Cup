@@ -1,7 +1,14 @@
-"""ERTM：弹性波逆时偏移项目骨架。
+"""ERTM：弹性波逆时偏移（双程波 RTM）项目。
 
-首期只提供可运行的工程结构、统一接口和占位算法；真正的黏弹性正演、
-P/S 分离、PP/PS 成像和 Q 补偿在后续阶段实现。
+当前版本实现：
+
+- 二维一阶速度—应力（声波/弹性）有限差分正演，交错网格八阶、CFS-PML；
+- 双程波逆时偏移：源波场正传 + 观测波场反传 + 互相关成像条件，
+  支持零延迟、归一化（源照明）、激发振幅三种条件，Laplacian 与低通后处理；
+- 井中场景支撑：四分量 COG→CSG 旋转、时间采样 sinc 插值、直达波切除、
+  多分量弹性 RTM（PP/PS，散度/旋度 P/S 分离）；
+- Q 衰减建模与反传侧 Q 补偿（增益指数缩放 + 时变低通 + 增益上限）；
+- 检查点存储与按预算重算，多炮按炮归一化叠加。
 
 快速入口::
 
@@ -9,13 +16,22 @@ P/S 分离、PP/PS 成像和 Q 补偿在后续阶段实现。
     from ertm.pipeline import ERTMPipeline
 
     result = ERTMPipeline(load_config()).run()
+    print(result.image.meta["condition"], result.metrics.values["image_peak_z"])
 """
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from .config import AppConfig, load_config, save_config
+from .config import (
+    AppConfig,
+    AcquisitionConfig,
+    ImagingConfig,
+    QConfig,
+    SolverConfig,
+    load_config,
+    save_config,
+)
 from .exceptions import (
     ConfigError,
     DataError,
@@ -40,6 +56,10 @@ from .types import (
 __all__ = [
     "__version__",
     "AppConfig",
+    "AcquisitionConfig",
+    "ImagingConfig",
+    "QConfig",
+    "SolverConfig",
     "load_config",
     "save_config",
     "ElasticModel",

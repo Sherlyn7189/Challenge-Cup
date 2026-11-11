@@ -153,6 +153,7 @@ class NumpyDataStore:
             "kind": "shot_record",
             "dt": shot.dt,
             "component": shot.receivers.component,
+            "components": list(shot.component_names),
             "source": {
                 "x": shot.source.x,
                 "z": shot.source.z,
@@ -160,22 +161,26 @@ class NumpyDataStore:
                 "kind": shot.source.kind,
                 "amplitude": shot.source.amplitude,
                 "delay": shot.source.delay,
+                "mechanism": shot.source.mechanism,
             },
             "shot_meta": shot.meta,
             "units": {"time": "s", "amplitude": "a.u."},
         }
+        payload: dict[str, Any] = {
+            "data": shot.data,
+            "t": shot.t,
+            "rx": shot.receivers.x,
+            "rz": shot.receivers.z,
+            "meta": _dump_meta(meta),
+        }
+        for index, (name_, array) in enumerate(shot.components.items()):
+            payload[f"component_{index}"] = array
+        payload["component_names"] = np.array(list(shot.components), dtype=str)
         try:
-            np.savez_compressed(
-                path,
-                data=shot.data,
-                t=shot.t,
-                rx=shot.receivers.x,
-                rz=shot.receivers.z,
-                meta=_dump_meta(meta),
-            )
+            np.savez_compressed(path, **payload)
         except OSError as exc:
             raise DataError(f"保存炮记录失败: {path}: {exc}") from exc
-        logger.info("炮记录已保存: %s", path)
+        logger.info("炮记录已保存: %s (%d 分量)", path, len(shot.components))
         return path
 
     def load_shot(self, path: str | Path) -> ShotRecord:
@@ -191,12 +196,20 @@ class NumpyDataStore:
                     kind=str(source_meta["kind"]),
                     amplitude=float(source_meta["amplitude"]),
                     delay=float(source_meta["delay"]),
+                    mechanism=str(source_meta.get("mechanism", "explosive")),
                 )
                 receivers = ReceiverSpec(
                     x=np.asarray(data["rx"], dtype=float),
                     z=np.asarray(data["rz"], dtype=float),
                     component=str(meta.get("component", "vz")),
                 )
+                components: dict[str, np.ndarray] = {}
+                if "component_names" in data:
+                    names = [str(item) for item in np.asarray(data["component_names"])]
+                    for index, name_ in enumerate(names):
+                        key = f"component_{index}"
+                        if key in data:
+                            components[name_] = np.asarray(data[key], dtype=np.float32)
                 shot = ShotRecord(
                     data=np.asarray(data["data"]),
                     dt=float(meta["dt"]),
@@ -204,6 +217,7 @@ class NumpyDataStore:
                     receivers=receivers,
                     source=source,
                     meta=dict(meta.get("shot_meta", {})),
+                    components=components,
                 )
         except (OSError, KeyError, ValueError) as exc:
             raise DataError(f"加载炮记录失败: {path}: {exc}") from exc

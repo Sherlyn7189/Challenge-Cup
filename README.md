@@ -1,147 +1,174 @@
-# ERTM 项目骨架
+# ERTM 项目：双程波逆时偏移（RTM）
 
-弹性波逆时偏移（ERTM）项目的首期工程骨架：统一配置、模型、求解器、成像、
-数据、可视化、评价、异常与日志，以及一条可端到端运行的占位流水线。
+弹性波逆时偏移（Reverse Time Migration）工程实现。当前版本把第一阶段的
+**占位骨架**替换为真实的双程波逆时偏移：
 
-> **当前阶段说明**：正演和成像是占位实现（直达波运动学 + 零场成像），
-> 只用于验证工程链路，不可用于物理解释。真正的黏弹性正演、P/S 分离、
-> PP/PS 成像和 Q 补偿在后续阶段实现。
+- 震源波场**正传** + 观测波场**反传**，同一时刻按成像条件做互相关；
+- 不做高频渐近或单程波近似，因此不受地层倾角与偏移孔径限制，可对高陡
+  构造、回转波、棱柱波乃至多次波成像，绕射波收敛归位；
+- 二维一阶速度—应力方程、交错网格八阶空间差分、CFS-PML 吸收边界；
+- 井中场景：四分量 COG→CSG 旋转、时间采样 sinc 插值、直达波切除、
+  多分量弹性 RTM（PP/PS）、Q 衰减与反传侧补偿。
 
-## 1. 在 PyCharm 中运行
+> 适用范围：二维 P-SV、各向同性弹性介质，CPU（NumPy）实现。三维、
+> 各向异性、GSLS 记忆变量形式的黏弹正演列入下一阶段，见
+> `docs/ERTM_Phase2_实现说明.md`。
 
-1. `File → Open` 选择 `C:\Users\30967\PycharmProjects\SeismicProjectERTM`。
-2. 解释器选择项目内的 `.venv\Scripts\python.exe`。
-3. 右键 `main.py` → `Run 'main'`。
-
-如果 PyCharm 提示解释器无效，进入
-`File → Settings → Project: SeismicProjectERTM → Python Interpreter`，
-手动选择上面的 `.venv\Scripts\python.exe`。
-
-## 2. 命令行运行
+## 1. 快速开始
 
 ```powershell
-# 完整占位流水线（默认 config/default.json）
+# 完整 RTM 流水线（默认 config/default.json，三炮叠加，约 15 s）
 .venv\Scripts\python.exe main.py
 
-# 只做结构/接口自检
+# 结构与接口自检（不跑数值流程）
 .venv\Scripts\python.exe main.py --check
 
-# 自定义配置 / 输出目录 / 日志级别
-.venv\Scripts\python.exe main.py --config config\default.json --output output --log-level INFO
+# 只跑数值测试（差分精度、CFL、检查点、归位、陡倾角、P/S 分离、Q 补偿）
+.venv\Scripts\python.exe -m unittest tests.test_rtm -v
 
-# 运行结构测试
+# 结构与契约测试 + 端到端流水线
 .venv\Scripts\python.exe -m unittest tests.test_structure -v
 ```
+
+PyCharm 中右键 `main.py` → Run 即可；解释器选项目内 `.venv\Scripts\python.exe`。
+
+## 2. 产物
+
+一次运行在 `output/` 下生成：
+
+```text
+output/
+├── logs/ertm.log
+├── models/model.npz            # 弹性参数模型（vp/vs/rho/qp/qs）
+├── shots/shot.npz              # 首炮记录（含多分量）
+├── images/image_pp.npz/.png    # 叠加后的深度域成像
+├── images/model.png            # 模型、炮集、指标图
+├── images/shot.png
+├── images/metrics.png
+└── reports/
+    ├── config_snapshot.json
+    ├── metrics.json
+    └── run_report.json         # 配置、稳定性、检查点、成像元数据
+```
+
+`run_report.json` 记录正演引擎、成像条件、检查点间隔与内存、Q 补偿参数、
+稳定性诊断（CFL 比值、PPW）与全部产物路径，可直接复现一次运行。
 
 ## 3. 目录结构
 
 ```text
 SeismicProjectERTM/
-├── main.py                     # 程序入口：参数解析、日志、调用流水线
+├── main.py                     # 命令行入口
 ├── config/
-│   └── default.json            # 默认参数（网格、模型、源检、求解、成像、输出）
+│   ├── default.json            # 声波三炮演示（地面观测）
+│   └── borehole_4c.json        # 井中四分量 + 弹性 RTM 演示
 ├── ertm/
-│   ├── __init__.py             # 包初始化与公共导出
-│   ├── config.py               # 配置 dataclass、加载、校验、保存快照
-│   ├── types.py                # GridSpec / ElasticModel / ShotRecord / ImageResult 等数据契约
-│   ├── interfaces.py           # ModelBuilder / ForwardSolver / Imager / DataStore 等 Protocol
-│   ├── exceptions.py           # 统一异常体系
-│   ├── logging_utils.py        # 统一日志初始化
-│   ├── models.py               # 地质模型构建（层状 + 椭圆异常体占位）
-│   ├── solver.py               # 正演/伴随接口与占位直达波记录
-│   ├── imaging.py              # ERTM 成像接口与占位零场图像
-│   ├── data.py                 # npz/JSON 读写、输出目录管理
-│   ├── visualization.py        # 模型/炮集/图像/指标图
-│   ├── evaluation.py           # 基础统计指标与图像对比
-│   ├── pipeline.py             # 模块编排、产物清单、运行报告
-│   └── diagnostics.py          # 结构自检与微型契约检查
+│   ├── numerics.py             # 八阶交错差分、CPML、CFL、sinc 插值、滤波
+│   ├── propagation.py          # 声波/弹性一阶速度—应力正演与反传延拓
+│   ├── solver.py               # 求解器封装（配置→规格→多分量 ShotRecord）
+│   ├── imaging.py              # RTM 装配：检查点、成像条件、归一化、后处理
+│   ├── preprocess.py           # COG→CSG 旋转、时间重采样、直达波切除
+│   ├── qcomp.py                # Q 衰减频响与反传侧补偿（时变增益+低通）
+│   ├── models.py               # 层状背景 + 溶洞/裂缝带/断层
+│   ├── pipeline.py             # 多炮正演→成像→叠加→评价→输出
+│   ├── evaluation.py           # 统计指标 + 成像质量代理指标
+│   ├── data.py / visualization.py / logging_utils.py / exceptions.py
+│   └── config.py / types.py / interfaces.py / diagnostics.py
 ├── tests/
-│   ├── __init__.py
-│   └── test_structure.py       # 结构/契约/读写/流水线测试
-├── output/                     # 运行产物（自动创建）
-│   ├── logs/
-│   ├── models/
-│   ├── shots/
-│   ├── images/
-│   └── reports/
-├── data/                       # 实际数据（SEG-Y 等，后续使用）
-├── docs/                       # 需求与技术文档
-├── scripts/                    # 辅助脚本
-├── requirements.txt
-└── .venv/                      # 虚拟环境（勿手动改）
+│   ├── test_structure.py       # 接口/契约/IO/流水线
+│   └── test_rtm.py             # 数值正确性与成像质量
+└── docs/                       # 需求与技术方案（第一、二阶段）
 ```
 
-## 4. 模块职责
+## 4. 核心实现
 
-| 文件 | 职责 | 不做什么 |
+### 4.1 正演与反传（`propagation.py`）
+
+- 声波：`ρ∂v/∂t = ∇p`，`(1/κ)∂p/∂t = ∇·v`，`κ = ρv_p²`；
+- 弹性：一阶速度—应力 P-SV 系统，变量位置与技术方案表 3.1 一致
+  （`σ_xx, σ_zz` 在单元中心，`v_x`/`v_z` 在面心，`σ_xz` 在角点）；
+- 空间八阶交错差分（`c₁ = 1225/1024 …`），时间二阶蛙跳；
+- CFS-PML：`ψⁿ = b·ψⁿ⁻¹ + a·Df`，`∂f/∂x|_PML = Df/κ + ψ`；
+- 自由表面（`boundary="free"`）：顶部不设 PML，声波 `p=0`、弹性
+  `σ_zz = σ_xz = 0`；
+- 反传：记录按时间倒序注入检波点（速度分量注入速度场，`p` 注入两个正应力）。
+
+### 4.2 成像（`imaging.py`）
+
+| 条件 | 公式 | 说明 |
 |---|---|---|
-| `main.py` | 命令行入口、日志初始化、异常兜底、打印摘要 | 不实现数值算法 |
-| `ertm/config.py` | 读取/校验/保存 JSON 配置 | 不构建模型 |
-| `ertm/types.py` | 跨模块数据契约 | 不含业务逻辑 |
-| `ertm/interfaces.py` | 统一 Protocol 接口 | 不含实现 |
-| `ertm/models.py` | 层状背景 + 异常体占位模型 | 不做 Q 拟合、各向异性 |
-| `ertm/solver.py` | 正演/伴随接口与占位记录 | 不做波动方程延拓 |
-| `ertm/imaging.py` | 成像接口与占位图像 | 不做反传/Q 补偿 |
-| `ertm/data.py` | npz/JSON 持久化、目录管理 | 不解析 SEG-Y（后续） |
-| `ertm/visualization.py` | 静态图输出 | 不做计算 |
-| `ertm/evaluation.py` | 基础统计/误差指标 | 不做成像质量解释 |
-| `ertm/pipeline.py` | 组装模块、生成产物和报告 | 不重复实现各模块逻辑 |
-| `ertm/diagnostics.py` | 结构/接口自检 | 不做精度评价 |
+| `zero_lag` | `I = Σ_s ∫ W_s·W_r dt` | 技术方案式 (6.7) |
+| `normalized` | `I = Σ∫W_sW_r dt / (Σ∫W_s² dt + ε)` | 式 (6.10)，压深浅能量失衡 |
+| `excitation` | `I = A_s(x)·W_r(x, t_exc)` | 激发振幅/波至时间约束，免存完整源波场 |
 
-## 5. 输出产物
+- 源波场用**检查点**保存（内存预算 `imaging.checkpoint_mb`），反传时分块
+  重算；状态含场与 PML 记忆变量，重放与全新运行逐位一致（有测试）；
+- 时间切除：只累计 `t > delay + start_periods/f0`，压制近源强能量；
+- PML 区域置零（该区不满足伴随对称性）；
+- 后处理：Laplacian 去低波数 → 波数域低通 → 多炮按炮归一化叠加。
 
-一次完整运行会在 `output/` 下生成：
+### 4.3 井中四分量链路（`preprocess.py`）
 
-```text
-output/
-├── logs/ertm.log
-├── models/model.npz
-├── shots/shot.npz
-├── images/model.png
-├── images/shot.png
-├── images/image_pp.png
-├── images/image_pp.npz
-├── images/metrics.png
-└── reports/
-    ├── config_snapshot.json
-    ├── metrics.json
-    └── run_report.json
-```
+1. **COG→CSG**：按方位角旋转 `v_x, v_z`（正交变换，保能量）；
+2. **时间采样插值**：Kaiser 窗 sinc，36 μs/40 μs 与求解器 `dt` 互换；
+3. **直达波切除**：`t_mute = delay + 1.2/f0 + 1.05·|x − x_s|/v_ref`，余弦过渡；
+4. **首尾 taper**：压制记录截断引起的边界反射。
 
-`run_report.json` 包含配置、环境、模型统计、炮记录/图像元数据、指标、产物路径和耗时，
-可用于复现和排查。
+### 4.4 Q 衰减与补偿（`qcomp.py`）
 
-## 6. 配置说明
+- 衰减频响 `H(f,t) = exp(−πft/Q)·exp(iφ)`，`φ = −(2ft/Q)ln(f/f_ref)`，
+  振幅与相位可分别开关（“解耦”）；
+- 补偿在**反传边界条件**上：增益指数乘 `α_c`、上限 `gain_cap`、叠加时变
+  低通，满足技术方案 6.4.4「只补偿检波点侧」与 7.4 的稳定化要求。
 
-`config/default.json` 的主要字段：
+## 5. 关键配置（`config/default.json`）
 
-| 段 | 关键字段 | 说明 |
+| 段 | 字段 | 说明 |
 |---|---|---|
-| `grid` | `nx, nz, dx, dz` | 二维规则网格，数组形状 `(nz, nx)` |
-| `model` | `layers, anomaly` | 层状背景 + 一个异常体（cave/fracture/fault） |
-| `source` | `x, z, f0, kind` | 震源位置、主频、子波类型 |
-| `receivers` | `count, x_start, x_end, z` | 检波点线 |
-| `solver` | `nt, dt, order, boundary` | 时间步、阶数、边界类型 |
-| `imaging` | `mode, normalize, laplacian` | 成像模式与后处理开关 |
-| `output` | `root, save_figures, save_data` | 输出目录与开关 |
-| `logging` | `level, file_name` | 日志级别与文件名 |
+| `grid` | `nx, nz, dx, dz` | 二维规则网格，单位米 |
+| `model` | `layers, anomaly` | 层状背景 + 溶洞/裂缝带/断层（`kind`, `dip`） |
+| `source` | `x, z, f0, delay, mechanism` | 震源位置/主频/延迟/机制（爆炸/剪切/力源） |
+| `receivers` | `count, x_start, x_end, z` | 地面排列；井中排列由 `acquisition` 决定 |
+| `acquisition` | `geometry, components, record_dt, rotation_deg, shots` | 观测系统、四分量、实测采样率、多炮 |
+| `solver` | `nt, dt, order, boundary, engine, npml` | 时间步、阶数、边界、声波/弹性引擎 |
+| `imaging` | `mode, condition, separation, laplacian, checkpoint_mb` | 成像条件与后处理 |
+| `q` | `enabled, alpha_c, gain_cap, apply_attenuation` | Q 补偿强度与是否叠加衰减 |
 
-## 7. 测试
+`dt` 必须满足 `dt ≤ 0.5/(v_max·√((C/dx)² + (C/dz)²))`；不满足时求解器
+直接报错并给出建议值（而不是静默降精度）。
 
-```powershell
-# 结构 + 契约 + 读写 + 微型流水线
-.venv\Scripts\python.exe -m unittest tests.test_structure -v
+## 6. 演示配置
 
-# 或者直接运行测试文件
-.venv\Scripts\python.exe tests\test_structure.py
+- `config/default.json`：地面观测、声波、三炮（x = 700/1000/1300 m），
+  层状模型 + 溶洞，`condition=normalized`，约 15 s 出图；
+- `config/borehole_4c.json`：井中四分量、弹性波、PP/PS 成像、Q 补偿，
+  用于演示第 ②③④ 项关键技术（运行时间明显更长）。
 
-# 入口自检
-.venv\Scripts\python.exe main.py --check
-```
+## 7. 测试与验证
 
-测试不验证数值精度，只验证模块能组装、数据形状一致、读写往返正确。
+`tests/test_rtm.py` 覆盖：
 
-## 8. 依赖
+- 八阶交错差分相对误差 < 1e-3（四阶 < 1e-2 且明显更差）；
+- sinc 插值波形误差 < 2e-2；CFL 超限时抛错；
+- CPML 吸收（波场出界后能量衰减）；
+- 检查点重放与全新运行逐位一致（`allclose atol=1e-6`）；
+- 常速走时差与解析解一致（误差 < 10 ms）；
+- 层状界面归位误差 < 100 m；70° 陡倾角界面成像能量比 > 5；
+- 爆炸源不产生可观 S 能量（curl/div < 5%），剪切源以 S 为主；
+- PP/PS 弹性多分量成像有限且非零；
+- Q 衰减后振幅下降、补偿后恢复到 0.7–3 倍区间且无 NaN；
+- 四分量旋转保能量、90° 旋转交换分量；
+- 端到端流水线可产出报告与图像。
 
-以 `requirements.txt` 为准。首期骨架实际使用 NumPy 和 Matplotlib；
-SciPy、Numba、PyVista、Segyio、Pandas 为后续数值计算/三维/SEG-Y 预留。
+## 8. 已知边界（下一阶段）
+
+- 二维 P-SV，未做三维与 SH；四分量中的水平横向分量在二维下不参与；
+- 黏弹正演目前用频域 Q 算子模拟衰减，未实现 GSLS 记忆变量；
+  补偿是数据域（反传边界条件）的时变增益 + 低通，而非伴随算子内的 GSLS；
+- 未使用 GPU/Numba，大网格需按 `checkpoint_mb` 调整内存；
+- 逆散射成像条件、角度域道集、LSRTM 未实现。
+
+## 9. 依赖
+
+以 `requirements.txt` 为准；核心链路只用 NumPy，绘图用 Matplotlib，
+SciPy 仅用于可选的高阶信号处理。

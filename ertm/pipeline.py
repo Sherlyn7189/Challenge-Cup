@@ -1,10 +1,18 @@
 """流水线编排。
 
-``ERTMPipeline`` 是模块之间的唯一“组装点”：
-配置 -> 模型 -> 观测系统 -> 正演 -> 成像 -> 评价 -> 输出。
+``ERTMPipeline`` 是模块之间的唯一“组装点”，顺序为::
+
+    配置 → 模型 → 观测系统 → 正演（多炮） → 采集效应/预处理
+         → RTM 成像（可选 Q 补偿） → 叠加 → 评价 → 输出
 
 它只负责调用接口、组织产物和写报告，不实现任何数值算法。这样替换
-占位求解器/成像器时，``main.py`` 和测试都不需要改。
+求解器/成像器/评价器时，``main.py`` 与测试都不需要改。
+
+多炮处理
+--------
+每炮独立成像，按炮做振幅归一化后叠加（技术方案 6.3.5）；单炮时等价于直接
+输出。回归对比（Q=∞ / 含 Q 不补偿 / 含 Q 补偿）由 ``q`` 配置段控制，并在
+报告里记录实际使用的补偿强度与增益上限。
 """
 
 from __future__ import annotations
@@ -25,6 +33,8 @@ from .imaging import build_imager
 from .interfaces import DataStore, Evaluator, ForwardSolver, Imager, ModelBuilder, Visualizer
 from .logging_utils import get_logger
 from .models import LayeredModelBuilder
+from .preprocess import prepare_shot, resample_shot
+from .qcomp import QCompensator, attenuate_record, build_compensator
 from .solver import build_solver
 from .types import (
     ElasticModel,
@@ -48,6 +58,8 @@ class PipelineResult:
     shot: ShotRecord
     image: ImageResult
     metrics: Metrics
+    shots: list[ShotRecord] = field(default_factory=list)
+    shot_images: list[ImageResult] = field(default_factory=list)
     artifacts: list[Path] = field(default_factory=list)
     report_path: Path | None = None
     elapsed_s: float = 0.0
@@ -58,9 +70,12 @@ class PipelineResult:
             "elapsed_s": round(self.elapsed_s, 3),
             "model_shape": list(self.model.shape),
             "n_receivers": self.shot.receivers.nrec,
+            "n_shots": len(self.shots) or 1,
             "n_time_samples": int(self.shot.t.size),
             "image_mode": self.image.mode,
             "placeholder": bool(self.image.meta.get("placeholder", False)),
+            "engine": self.image.meta.get("engine"),
+            "condition": self.image.meta.get("condition"),
             "artifacts": [str(p) for p in self.artifacts],
             "report": None if self.report_path is None else str(self.report_path),
             "metrics": dict(self.metrics.values),
@@ -75,29 +90,78 @@ def _resolve_output_root(config: AppConfig) -> Path:
 
 
 def _build_receivers(config: AppConfig) -> ReceiverSpec:
-    x = np.linspace(
-        config.receivers.x_start,
-        config.receivers.x_end,
-        int(config.receivers.count),
-        dtype=float,
-    )
-    z = np.full_like(x, float(config.receivers.z))
+    """按观测系统生成检波点（地面排列或井中排列）。"""
+    acquisition = config.acquisition
+    count = int(config.receivers.count)
+    if acquisition.geometry == "borehole":
+        z = np.linspace(
+            float(acquisition.borehole_z_start),
+            float(acquisition.borehole_z_end),
+            count,
+            dtype=float,
+        )
+        x = np.full_like(z, float(acquisition.borehole_x))
+    else:
+        x = np.linspace(
+            float(config.receivers.x_start),
+            float(config.receivers.x_end),
+            count,
+            dtype=float,
+        )
+        z = np.full_like(x, float(config.receivers.z))
     return ReceiverSpec(x=x, z=z, component=config.receivers.component)
 
 
-def _build_source(config: AppConfig) -> SourceSpec:
+def _build_source(config: AppConfig, x: float | None = None) -> SourceSpec:
     return SourceSpec(
-        x=float(config.source.x),
+        x=float(config.source.x if x is None else x),
         z=float(config.source.z),
         f0=float(config.source.f0),
         kind=config.source.kind,
         amplitude=float(config.source.amplitude),
         delay=float(config.source.delay),
+        mechanism=config.source.mechanism,
+    )
+
+
+def _build_sources(config: AppConfig) -> list[SourceSpec]:
+    positions = tuple(config.acquisition.shots) or (float(config.source.x),)
+    return [_build_source(config, x=float(x)) for x in positions]
+
+
+def stack_images(
+    images: list[ImageResult],
+    *,
+    normalize: bool = True,
+) -> ImageResult:
+    """按炮归一化后叠加（技术方案 6.3.5）。"""
+    if not images:
+        raise PipelineError("没有可叠加的成像结果")
+    if len(images) == 1:
+        return images[0]
+    stacked = np.zeros(images[0].image.shape, dtype=np.float64)
+    for image in images:
+        data = np.asarray(image.image, dtype=np.float64)
+        if normalize:
+            scale = float(np.max(np.abs(data)))
+            if scale > 0:
+                data = data / scale
+        stacked += data
+    stacked /= len(images)
+    meta = dict(images[0].meta)
+    meta.update(
+        {"stacked": True, "n_shots": len(images), "stack_normalize": bool(normalize)}
+    )
+    return ImageResult(
+        image=stacked.astype(np.float32),
+        grid=images[0].grid,
+        mode=images[0].mode,
+        meta=meta,
     )
 
 
 class ERTMPipeline:
-    """ERTM 首期流水线（占位算法 + 完整工程链路）。"""
+    """ERTM 流水线（真实正演 + 逆时偏移）。"""
 
     def __init__(
         self,
@@ -116,88 +180,110 @@ class ERTMPipeline:
         self.data_store = data_store or NumpyDataStore(self.output_root)
         self.model_builder = model_builder or LayeredModelBuilder()
         self.solver = solver or build_solver(config.solver)
-        self.imager = imager or build_imager(config.imaging)
+        self.imager = imager or build_imager(config.imaging, config.solver)
         self.visualizer = visualizer or build_visualizer(
             self.data_store.dirs["images"],
             enabled=config.output.save_figures,
         )
         self.evaluator = evaluator or build_evaluator()
 
+    # ------------------------------------------------------------------ 主流程
     def run(self) -> PipelineResult:
         """执行完整流水线并返回产物。"""
         started = time.perf_counter()
         artifacts: list[Path] = []
+        config = self.config
 
         logger.info("=" * 72)
-        logger.info("ERTM 流水线启动: %s", self.config.project.name)
+        logger.info("ERTM 流水线启动: %s", config.project.name)
         logger.info(
-            "网格: nx=%d, nz=%d, dx=%.2f, dz=%.2f, nt=%d, dt=%.4f",
-            self.config.grid.nx,
-            self.config.grid.nz,
-            self.config.grid.dx,
-            self.config.grid.dz,
-            self.config.solver.nt,
-            self.config.solver.dt,
+            "网格 nx=%d nz=%d dx=%.1f dz=%.1f | 引擎=%s | nt=%d dt=%.2e | 观测=%s",
+            config.grid.nx,
+            config.grid.nz,
+            config.grid.dx,
+            config.grid.dz,
+            config.solver.engine,
+            config.solver.nt,
+            config.solver.dt,
+            config.acquisition.geometry,
         )
 
-        # 1) 配置快照：无论是否保存数据，都保留一份可追溯配置。
+        # 1) 配置快照
         snapshot = save_config(
-            self.config,
+            config,
             self.data_store.dirs["reports"] / "config_snapshot.json",
         )
         artifacts.append(snapshot)
 
         # 2) 模型
         try:
-            model = self.model_builder.build(self.config)
+            model = self.model_builder.build(config)
         except Exception as exc:
             raise PipelineError(f"模型构建阶段失败: {exc}") from exc
-
-        if self.config.output.save_data:
+        if config.output.save_data:
             artifacts.append(self.data_store.save_model(model, "model"))
-        if self.config.output.save_figures:
+        if config.output.save_figures:
             figure = self.visualizer.plot_model(model, "model")
             if figure is not None:
                 artifacts.append(figure)
 
         # 3) 观测系统
-        source = _build_source(self.config)
-        receivers = _build_receivers(self.config)
+        receivers = _build_receivers(config)
+        sources = _build_sources(config)
+        logger.info("观测系统: %d 炮 × %d 道", len(sources), receivers.nrec)
 
-        # 4) 正演
-        try:
-            shot = self.solver.forward(model, source, receivers)
-        except Exception as exc:
-            raise PipelineError(f"正演阶段失败: {exc}") from exc
+        # 4) 正演 + 采集效应
+        shots: list[ShotRecord] = []
+        for index, source in enumerate(sources):
+            try:
+                shot = self.solver.forward(
+                    model,
+                    source,
+                    receivers,
+                    components=self._record_components(),
+                )
+                shot = self._apply_acquisition(shot, model, index)
+            except Exception as exc:
+                raise PipelineError(f"第 {index} 炮正演阶段失败: {exc}") from exc
+            shots.append(shot)
 
-        if self.config.output.save_data:
-            artifacts.append(self.data_store.save_shot(shot, "shot"))
-        if self.config.output.save_figures:
-            figure = self.visualizer.plot_shot(shot, "shot")
+        if config.output.save_data:
+            artifacts.append(self.data_store.save_shot(shots[0], "shot"))
+        if config.output.save_figures:
+            figure = self.visualizer.plot_shot(shots[0], "shot")
             if figure is not None:
                 artifacts.append(figure)
 
-        # 5) 成像
-        try:
-            image = self.imager.migrate(shot, model)
-        except Exception as exc:
-            raise PipelineError(f"成像阶段失败: {exc}") from exc
+        # 5) 成像（可选 Q 补偿）
+        compensator = self._build_compensator(model)
+        shot_images: list[ImageResult] = []
+        for index, shot in enumerate(shots):
+            try:
+                image = self.imager.migrate(shot, model, preprocess=compensator)
+            except Exception as exc:
+                raise PipelineError(f"第 {index} 炮成像阶段失败: {exc}") from exc
+            image.meta["shot_index"] = index
+            shot_images.append(image)
 
-        if self.config.output.save_data:
+        image = stack_images(
+            shot_images,
+            normalize=bool(config.imaging.stack_normalize),
+        )
+
+        if config.output.save_data:
             artifacts.append(self.data_store.save_image(image, f"image_{image.mode}"))
-        if self.config.output.save_figures:
+        if config.output.save_figures:
             figure = self.visualizer.plot_image(image, f"image_{image.mode}")
             if figure is not None:
                 artifacts.append(figure)
 
         # 6) 评价
         try:
-            metrics = self.evaluator.evaluate(image, model, shot)
+            metrics = self.evaluator.evaluate(image, model, shots[0])
         except Exception as exc:
             raise PipelineError(f"评价阶段失败: {exc}") from exc
-
         artifacts.append(self.data_store.save_json(metrics.to_dict(), "metrics"))
-        if self.config.output.save_figures:
+        if config.output.save_figures:
             figure = self.visualizer.plot_metrics(metrics, "metrics")
             if figure is not None:
                 artifacts.append(figure)
@@ -205,19 +291,27 @@ class ERTMPipeline:
         # 7) 运行报告
         elapsed = time.perf_counter() - started
         report = {
-            "project": self.config.project.name,
-            "version": self.config.project.version,
-            "placeholder": True,
-            "note": "首期占位实现：正演/成像为占位算法，不可用于物理解释。",
+            "project": config.project.name,
+            "version": config.project.version,
+            "placeholder": False,
+            "method": "reverse-time migration (two-way wave equation)",
             "elapsed_s": round(elapsed, 3),
             "environment": {
                 "python": platform.python_version(),
                 "numpy": np.__version__,
                 "platform": platform.platform(),
             },
-            "config": self.config.to_dict(),
+            "config": config.to_dict(),
             "model_summary": model.summary(),
-            "shot_meta": shot.meta,
+            "acquisition": {
+                "geometry": config.acquisition.geometry,
+                "n_shots": len(sources),
+                "n_receivers": receivers.nrec,
+                "record_dt": config.acquisition.record_dt,
+                "components": list(self._record_components()),
+                "direct_mute": bool(config.acquisition.mute_direct),
+            },
+            "shot_meta": shots[0].meta,
             "image_meta": image.meta,
             "metrics": metrics.to_dict(),
             "artifacts": [str(path) for path in artifacts],
@@ -225,11 +319,13 @@ class ERTMPipeline:
         report_path = self.data_store.save_json(report, "run_report")
 
         result = PipelineResult(
-            config=self.config,
+            config=config,
             model=model,
-            shot=shot,
+            shot=shots[0],
             image=image,
             metrics=metrics,
+            shots=shots,
+            shot_images=shot_images,
             artifacts=[*artifacts, report_path],
             report_path=report_path,
             elapsed_s=elapsed,
@@ -238,6 +334,75 @@ class ERTMPipeline:
         logger.info("运行报告: %s", report_path)
         logger.info("=" * 72)
         return result
+
+    # ---------------------------------------------------------------- 辅助
+    def _record_components(self) -> tuple[str, ...]:
+        """按观测系统选择记录分量（1 或 4）。"""
+        n = int(self.config.acquisition.components)
+        if self.config.solver.engine == "acoustic":
+            return ("p",)
+        return ("p", "vx", "vz", "sxz") if n >= 4 else ("vz",)
+
+    def _apply_acquisition(
+        self,
+        shot: ShotRecord,
+        model: ElasticModel,
+        index: int,
+    ) -> ShotRecord:
+        """施加采集效应：采样率 → 旋转 → 切除 → taper → 可选 Q 衰减。"""
+        config = self.config
+        processed = shot
+        if config.acquisition.record_dt is not None:
+            processed = resample_shot(processed, float(config.acquisition.record_dt))
+        processed = prepare_shot(
+            processed,
+            model=model,
+            rotation_deg=float(config.acquisition.rotation_deg),
+            mute=bool(config.acquisition.mute_direct),
+        )
+        if config.q.enabled and config.q.apply_attenuation:
+            q_value = float(np.mean(model.qp))
+            processed.data = attenuate_record(
+                np.asarray(processed.data, dtype=np.float64),
+                processed.dt,
+                q=q_value,
+                f_ref=float(config.q.f_ref),
+                strength=float(config.q.attenuation_strength),
+            ).astype(np.float32)
+            if processed.components:
+                processed.components = {
+                    name: attenuate_record(
+                        np.asarray(array, dtype=np.float64),
+                        processed.dt,
+                        q=q_value,
+                        f_ref=float(config.q.f_ref),
+                        strength=float(config.q.attenuation_strength),
+                    ).astype(np.float32)
+                    for name, array in processed.components.items()
+                }
+            processed.meta = {**processed.meta, "q_attenuated": True}
+        processed.meta = {**processed.meta, "shot_index": index}
+        return processed
+
+    def _build_compensator(self, model: ElasticModel) -> QCompensator | None:
+        config = self.config
+        if not config.q.enabled:
+            return None
+        wave = "P" if config.imaging.mode in {"pp", "ps"} else "S"
+        compensator = build_compensator(
+            config.q,
+            float(np.mean(model.qp)),
+            float(np.mean(model.qs)),
+            wave=wave,
+        )
+        logger.info(
+            "Q 补偿: alpha_c=%.2f, Q=%s%.1f, 增益上限=%.1f",
+            config.q.alpha_c,
+            wave,
+            compensator.q_value,
+            config.q.gain_cap,
+        )
+        return compensator
 
 
 def run_pipeline(config: AppConfig) -> PipelineResult:

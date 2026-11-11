@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import AppConfig, ModelConfig
+from .config import AnomalyConfig, AppConfig, ModelConfig
 from .exceptions import ModelError
 from .logging_utils import get_logger
 from .types import ElasticModel, GridSpec
@@ -60,9 +60,10 @@ class LayeredModelBuilder:
 
         meta = {
             "builder": self.name,
-            "placeholder": True,
+            "placeholder": False,
             "layer_count": len(model_cfg.layers),
             "anomaly_kind": None if model_cfg.anomaly is None else model_cfg.anomaly.kind,
+            "anomaly_dip": None if model_cfg.anomaly is None else float(model_cfg.anomaly.dip),
         }
 
         if model_cfg.anomaly is not None:
@@ -93,6 +94,32 @@ class LayeredModelBuilder:
         return model
 
     @staticmethod
+    def _anomaly_mask(
+        grid: GridSpec,
+        anomaly: "AnomalyConfig",
+    ) -> np.ndarray:
+        """按 ``kind`` 生成异常体掩膜（真实几何，不再是统一椭圆）。
+
+        - ``cave``：椭圆溶洞；
+        - ``fracture``：按 ``dip`` 旋转的窄带（裂缝带），长轴 ``rx``、厚度 ``rz``；
+        - ``fault``：按 ``dip`` 倾斜的断层带，带宽 ``2·rz``，两侧错断由 ``rx`` 控制。
+        """
+        x = grid.x0 + np.arange(grid.nx, dtype=np.float64) * grid.dx
+        z = grid.z0 + np.arange(grid.nz, dtype=np.float64) * grid.dz
+        xx, zz = np.meshgrid(x, z)
+        dx = xx - float(anomaly.x)
+        dz = zz - float(anomaly.z)
+        angle = np.deg2rad(float(anomaly.dip))
+        # 旋转到异常体局部坐标（u 沿走向，v 垂直走向）
+        u = np.cos(angle) * dx + np.sin(angle) * dz
+        v = -np.sin(angle) * dx + np.cos(angle) * dz
+        if anomaly.kind == "cave":
+            return (u / anomaly.rx) ** 2 + (v / anomaly.rz) ** 2 <= 1.0
+        if anomaly.kind == "fracture":
+            return (np.abs(u) <= anomaly.rx) & (np.abs(v) <= anomaly.rz)
+        return np.abs(v) <= anomaly.rz
+
+    @staticmethod
     def _apply_anomaly(
         vp: np.ndarray,
         vs: np.ndarray,
@@ -102,19 +129,16 @@ class LayeredModelBuilder:
         grid: GridSpec,
         model_cfg: ModelConfig,
     ) -> None:
-        """在模型上叠加一个椭圆异常体（占位几何）。"""
+        """按异常体类型修改参数（未显式给出的量按局部背景比例缩放）。"""
         anomaly = model_cfg.anomaly
         if anomaly is None:
             return
 
-        x = grid.x0 + np.arange(grid.nx, dtype=np.float64) * grid.dx
-        z = grid.z0 + np.arange(grid.nz, dtype=np.float64) * grid.dz
-        xx, zz = np.meshgrid(x, z)
-        ellipse = ((xx - anomaly.x) / anomaly.rx) ** 2 + ((zz - anomaly.z) / anomaly.rz) ** 2
-        mask = ellipse <= 1.0
+        mask = LayeredModelBuilder._anomaly_mask(grid, anomaly)
         if not np.any(mask):
             logger.warning(
-                "异常体未落在任何网格内: x=%.1f, z=%.1f, rx=%.1f, rz=%.1f",
+                "异常体未落在任何网格内: kind=%s, x=%.1f, z=%.1f, rx=%.1f, rz=%.1f",
+                anomaly.kind,
                 anomaly.x,
                 anomaly.z,
                 anomaly.rx,
@@ -122,7 +146,6 @@ class LayeredModelBuilder:
             )
             return
 
-        # 未显式给出的参数按局部背景比例缩放，仅作为占位规则。
         vp[mask] = np.float32(anomaly.vp if anomaly.vp is not None else vp[mask] * 0.60)
         vs[mask] = np.float32(anomaly.vs if anomaly.vs is not None else vs[mask] * 0.60)
         rho[mask] = np.float32(anomaly.rho if anomaly.rho is not None else rho[mask] * 0.85)

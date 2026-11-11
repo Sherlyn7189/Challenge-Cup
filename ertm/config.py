@@ -27,6 +27,10 @@ _VALID_ORDERS = {2, 4, 6, 8}
 _VALID_BOUNDARIES = {"cpml", "free", "none"}
 _VALID_MODES = {"pp", "ps", "sp", "ss"}
 _VALID_DTYPES = {"float32", "float64"}
+_VALID_ENGINES = {"acoustic", "elastic"}
+_VALID_CONDITIONS = {"zero_lag", "normalized", "excitation"}
+_VALID_SEPARATIONS = {"divcurl", "stress"}
+_VALID_GEOMETRIES = {"surface", "borehole"}
 
 
 def _as_mapping(value: Any, name: str) -> dict[str, Any]:
@@ -127,6 +131,7 @@ class AnomalyConfig:
     z: float = 350.0
     rx: float = 40.0
     rz: float = 30.0
+    dip: float = 0.0
     vp: float | None = None
     vs: float | None = None
     rho: float | None = None
@@ -144,6 +149,7 @@ class AnomalyConfig:
             z=float(data.get("z", 350.0)),
             rx=_positive(data.get("rx", 40.0), "model.anomaly.rx"),
             rz=_positive(data.get("rz", 30.0), "model.anomaly.rz"),
+            dip=float(data.get("dip", 0.0)),
             vp=None if data.get("vp") is None else _positive(data["vp"], "model.anomaly.vp"),
             vs=None if data.get("vs") is None else _positive(data["vs"], "model.anomaly.vs"),
             rho=None if data.get("rho") is None else _positive(data["rho"], "model.anomaly.rho"),
@@ -160,6 +166,8 @@ class AnomalyConfig:
             )
         if self.rx <= 0 or self.rz <= 0:
             raise ConfigError("model.anomaly.rx/rz 必须为正")
+        if not -90.0 <= float(self.dip) <= 90.0:
+            raise ConfigError("model.anomaly.dip 必须在 [-90, 90] 度内")
         if self.vp is not None and self.vs is not None and self.vs >= self.vp:
             raise ConfigError("anomaly 必须满足 vs < vp")
 
@@ -211,6 +219,7 @@ class SourceConfig:
     kind: str = "ricker"
     amplitude: float = 1.0
     delay: float = 0.08
+    mechanism: str = "explosive"
 
     def validate(self) -> None:
         if self.f0 <= 0:
@@ -221,6 +230,8 @@ class SourceConfig:
             raise ConfigError("source.kind 必须是 ricker/gaussian/custom")
         if self.delay < 0:
             raise ConfigError("source.delay 不能为负")
+        if self.mechanism not in {"explosive", "shear", "force_z"}:
+            raise ConfigError("source.mechanism 必须是 explosive/shear/force_z")
 
 
 @dataclass(frozen=True)
@@ -236,17 +247,19 @@ class ReceiverConfig:
             raise ConfigError("receivers.count 至少为 1")
         if self.x_end <= self.x_start:
             raise ConfigError("receivers.x_end 必须大于 x_start")
-        if self.component not in {"vx", "vz", "vy", "pressure"}:
-            raise ConfigError("receivers.component 必须是 vx/vz/vy/pressure")
+        if self.component not in {"vx", "vz", "vy", "p", "pressure"}:
+            raise ConfigError("receivers.component 必须是 vx/vz/vy/p")
 
 
 @dataclass(frozen=True)
 class SolverConfig:
-    nt: int = 600
-    dt: float = 0.001
+    nt: int = 1200
+    dt: float = 5.0e-4
     order: int = 8
     boundary: str = "cpml"
     dtype: str = "float32"
+    engine: str = "acoustic"
+    npml: int = 20
 
     def validate(self) -> None:
         if self.nt < 1:
@@ -259,17 +272,117 @@ class SolverConfig:
             raise ConfigError(f"solver.boundary 必须是 {sorted(_VALID_BOUNDARIES)} 之一")
         if self.dtype not in _VALID_DTYPES:
             raise ConfigError(f"solver.dtype 必须是 {sorted(_VALID_DTYPES)} 之一")
+        if self.engine not in _VALID_ENGINES:
+            raise ConfigError(f"solver.engine 必须是 {sorted(_VALID_ENGINES)} 之一")
+        if self.npml < 3:
+            raise ConfigError(f"solver.npml 至少为 3，当前 {self.npml}")
 
 
 @dataclass(frozen=True)
 class ImagingConfig:
+    """成像参数。
+
+    ``condition`` 对应技术方案 6.3：``zero_lag``（式 6.7）、``normalized``
+    （式 6.10，源照明归一化）、``excitation``（激发振幅/波至时间约束，
+    免存完整源波场）。``separation`` 选择 P/S 分离方式：
+    ``divcurl``（式 3.7，散度/旋度）或 ``stress``（应力代数组合）。
+    """
+
     mode: str = "pp"
+    condition: str = "normalized"
+    separation: str = "divcurl"
     normalize: bool = True
+    illumination: bool = True
+    receiver_normalization: bool = False
     laplacian: bool = True
+    lowpass_fraction: float = 0.85
+    checkpoint_mb: float = 256.0
+    eps: float = 1.0e-10
+    stack_normalize: bool = True
+    start_periods: float = 1.5
 
     def validate(self) -> None:
         if self.mode not in _VALID_MODES:
             raise ConfigError(f"imaging.mode 必须是 {sorted(_VALID_MODES)} 之一")
+        if self.condition not in _VALID_CONDITIONS:
+            raise ConfigError(
+                f"imaging.condition 必须是 {sorted(_VALID_CONDITIONS)} 之一"
+            )
+        if self.separation not in _VALID_SEPARATIONS:
+            raise ConfigError(
+                f"imaging.separation 必须是 {sorted(_VALID_SEPARATIONS)} 之一"
+            )
+        if not 0.0 < self.lowpass_fraction <= 1.0:
+            raise ConfigError("imaging.lowpass_fraction 必须在 (0, 1] 内")
+        if self.checkpoint_mb <= 0:
+            raise ConfigError("imaging.checkpoint_mb 必须为正")
+        if self.eps <= 0:
+            raise ConfigError("imaging.eps 必须为正")
+        if self.start_periods < 0:
+            raise ConfigError("imaging.start_periods 不能为负")
+
+
+@dataclass(frozen=True)
+class AcquisitionConfig:
+    """观测系统与采集参数。
+
+    ``geometry`` 支持 ``surface``（地面排列）与 ``borehole``（井中接收）；
+    ``components`` 为 1 或 4，4 表示四分量共接收点道集（COG）；
+    ``record_dt`` 模拟实测采样率（36 μs、40 μs），需要先插值到稳定 dt；
+    ``rotation_deg`` 为 COG→CSG 的分量旋转角；``shots`` 为空表示单炮。
+    """
+
+    geometry: str = "surface"
+    components: int = 1
+    record_dt: float | None = None
+    rotation_deg: float = 0.0
+    mute_direct: bool = True
+    shots: tuple[float, ...] = ()
+    borehole_x: float = 0.0
+    borehole_z_start: float = 0.0
+    borehole_z_end: float = 1000.0
+
+    def validate(self) -> None:
+        if self.geometry not in _VALID_GEOMETRIES:
+            raise ConfigError(
+                f"acquisition.geometry 必须是 {sorted(_VALID_GEOMETRIES)} 之一"
+            )
+        if int(self.components) not in (1, 4):
+            raise ConfigError("acquisition.components 只能是 1 或 4")
+        if self.record_dt is not None and self.record_dt <= 0:
+            raise ConfigError("acquisition.record_dt 必须为正")
+        if not -180.0 <= self.rotation_deg <= 180.0:
+            raise ConfigError("acquisition.rotation_deg 必须在 [-180, 180] 内")
+        for value in self.shots:
+            if float(value) < 0:
+                raise ConfigError("acquisition.shots 的炮点坐标不能为负")
+
+
+@dataclass(frozen=True)
+class QConfig:
+    """衰减与 Q 补偿参数（技术方案 6.4、7.4）。
+
+    ``alpha_c`` 为补偿强度（0 不补偿、1 完全补偿），``gain_cap`` 为增益上限，
+    ``f_ref`` 为参考频率；``apply_attenuation`` 决定正演记录是否叠加衰减
+    （用于合成“含 Q 观测”，便于对照补偿效果）。
+    """
+
+    enabled: bool = False
+    alpha_c: float = 0.8
+    f_ref: float = 30.0
+    gain_cap: float = 30.0
+    apply_attenuation: bool = False
+    attenuation_strength: float = 1.0
+
+    def validate(self) -> None:
+        if not 0.0 <= self.alpha_c <= 1.0:
+            raise ConfigError("q.alpha_c 必须在 [0, 1] 内")
+        if self.f_ref <= 0:
+            raise ConfigError("q.f_ref 必须为正")
+        if self.gain_cap < 1.0:
+            raise ConfigError("q.gain_cap 必须 ≥ 1")
+        if not 0.0 <= self.attenuation_strength <= 1.0:
+            raise ConfigError("q.attenuation_strength 必须在 [0, 1] 内")
 
 
 @dataclass(frozen=True)
@@ -304,8 +417,10 @@ class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
     receivers: ReceiverConfig = field(default_factory=ReceiverConfig)
+    acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
     solver: SolverConfig = field(default_factory=SolverConfig)
     imaging: ImagingConfig = field(default_factory=ImagingConfig)
+    q: QConfig = field(default_factory=QConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -315,8 +430,10 @@ class AppConfig:
         self.model.validate()
         self.source.validate()
         self.receivers.validate()
+        self.acquisition.validate()
         self.solver.validate()
         self.imaging.validate()
+        self.q.validate()
         self.output.validate()
         self.logging.validate()
         self._validate_geometry()
@@ -360,8 +477,10 @@ class AppConfig:
             model=ModelConfig.from_dict(data.get("model", {})),
             source=SourceConfig(**data.get("source", {})),
             receivers=ReceiverConfig(**data.get("receivers", {})),
+            acquisition=AcquisitionConfig(**data.get("acquisition", {})),
             solver=SolverConfig(**data.get("solver", {})),
             imaging=ImagingConfig(**data.get("imaging", {})),
+            q=QConfig(**data.get("q", {})),
             output=OutputConfig(**data.get("output", {})),
             logging=LoggingConfig(**data.get("logging", {})),
         )

@@ -2,7 +2,7 @@
 
 常用命令
 --------
-    python main.py                  # 使用 config/default.json 跑完整占位流水线
+    python main.py                  # 使用 config/default.json 跑完整 RTM 流水线
     python main.py --check          # 只做结构/接口自检
     python main.py --config my.json # 使用自定义配置
     python main.py --output out     # 覆盖输出目录
@@ -34,7 +34,7 @@ from ertm.pipeline import ERTMPipeline  # noqa: E402
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ertm",
-        description="ERTM 弹性波逆时偏移项目骨架（首期占位实现）",
+        description="ERTM 弹性波逆时偏移（双程波 RTM + 井中多分量）",
     )
     parser.add_argument(
         "--config",
@@ -79,13 +79,19 @@ def _print_summary(result) -> None:
     print("=" * 72)
     print(f"项目        : {summary['project']}")
     print(f"模型形状    : {summary['model_shape']} (nz, nx)")
-    print(f"检波点数    : {summary['n_receivers']}")
+    print(f"正演引擎    : {summary['engine']}")
+    print(f"成像条件    : {summary['condition']}")
+    print(f"炮数/道数   : {summary['n_shots']} / {summary['n_receivers']}")
     print(f"时间采样    : {summary['n_time_samples']}")
     print(f"成像模式    : {summary['image_mode']}")
     print(f"占位实现    : {summary['placeholder']}")
     print(f"耗时        : {summary['elapsed_s']} s")
     print(f"运行报告    : {summary['report']}")
     print("-" * 72)
+    peak_x = summary["metrics"].get("image_peak_x")
+    peak_z = summary["metrics"].get("image_peak_z")
+    if peak_x is not None and peak_z is not None:
+        print(f"最强成像点  : x={peak_x:.0f} m, z={peak_z:.0f} m")
     print("产物:")
     for path in summary["artifacts"]:
         print(f"  - {path}")

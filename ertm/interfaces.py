@@ -39,7 +39,7 @@ class ModelBuilder(Protocol):
 
 @runtime_checkable
 class ForwardSolver(Protocol):
-    """正演/伴随求解器接口。"""
+    """正演求解器接口（双程波延拓，多分量记录）。"""
 
     name: str
 
@@ -48,20 +48,30 @@ class ForwardSolver(Protocol):
         model: ElasticModel,
         source: SourceSpec,
         receivers: ReceiverSpec,
+        *,
+        components: tuple[str, ...] | None = ...,
     ) -> ShotRecord:
-        ...
-
-    def adjoint(self, record: ShotRecord, model: ElasticModel) -> np.ndarray:
         ...
 
 
 @runtime_checkable
 class Imager(Protocol):
-    """成像算法接口。"""
+    """成像算法接口。
+
+    ``migrate`` 内部完成“正传 + 反传 + 成像条件”，是 RTM 的唯一入口；
+    ``image_condition`` 只提供逐时刻的被积函数，供 QC 与自定义叠加使用。
+    """
 
     name: str
 
-    def migrate(self, shot: ShotRecord, model: ElasticModel) -> ImageResult:
+    def migrate(
+        self,
+        shot: ShotRecord,
+        model: ElasticModel,
+        *,
+        wavelet: np.ndarray | None = ...,
+        preprocess: Any = ...,
+    ) -> ImageResult:
         ...
 
     def image_condition(

@@ -136,7 +136,13 @@ class ElasticModel:
 
 @dataclass(frozen=True)
 class SourceSpec:
-    """点源/力源/矩张量源的通用描述。"""
+    """点源/力源/矩张量源的通用描述。
+
+    ``kind`` 决定时间子波形状（ricker/gaussian/custom），``mechanism`` 决定
+    空间激发方式：``explosive`` 为爆炸源（等量加到两个正应力，纯 P 辐射），
+    ``shear`` 为剪切源（加到 σ_xz，主要产生 S），``force_z`` 为垂向力源。
+    声波求解器忽略 ``mechanism``。
+    """
 
     x: float
     z: float
@@ -144,6 +150,13 @@ class SourceSpec:
     kind: str = "ricker"
     amplitude: float = 1.0
     delay: float = 0.0
+    mechanism: str = "explosive"
+
+    def __post_init__(self) -> None:
+        if self.mechanism not in {"explosive", "shear", "force_z"}:
+            raise ValueError(
+                f"source.mechanism 必须是 explosive/shear/force_z，当前 {self.mechanism!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -171,7 +184,12 @@ class ReceiverSpec:
 
 @dataclass
 class ShotRecord:
-    """单炮记录。"""
+    """单炮记录。
+
+    ``data`` 是主分量（声波为压力，弹性波默认为 ``vz``），形状
+    ``(nt, nrec)``；``components`` 保存多分量/多波型的全部记录，键为分量名
+    （``p/vx/vz/sxx/szz/sxz`` 等），便于弹性 RTM 与 PP/PS 成像按波型取用。
+    """
 
     data: np.ndarray
     dt: float
@@ -179,6 +197,7 @@ class ShotRecord:
     receivers: ReceiverSpec
     source: SourceSpec
     meta: dict[str, Any] = field(default_factory=dict)
+    components: dict[str, np.ndarray] = field(default_factory=dict)
 
     def validate(self) -> "ShotRecord":
         data = np.asarray(self.data)
@@ -194,7 +213,27 @@ class ShotRecord:
             raise ValueError("dt 必须为正")
         if not np.all(np.isfinite(data)):
             raise ValueError("炮记录含 NaN/Inf")
+        for name, array in self.components.items():
+            component = np.asarray(array)
+            if component.shape != data.shape:
+                raise ValueError(
+                    f"分量 {name!r} 形状 {component.shape} 与主分量 {data.shape} 不一致"
+                )
+            if not np.all(np.isfinite(component)):
+                raise ValueError(f"分量 {name!r} 含 NaN/Inf")
         return self
+
+    def component(self, name: str) -> np.ndarray:
+        """取指定分量；不存在时回退到主分量（并明确报错说明可用分量）。"""
+        if name in self.components:
+            return self.components[name]
+        if name == "primary":
+            return self.data
+        raise KeyError(f"记录中没有分量 {name!r}，可用: {sorted(self.components) or ['primary']}")
+
+    @property
+    def component_names(self) -> tuple[str, ...]:
+        return tuple(self.components) or ("primary",)
 
 
 @dataclass

@@ -28,9 +28,7 @@ from .config import (
 )
 from .data import ensure_output_dirs
 from .evaluation import BasicEvaluator
-from .imaging import ERTMImager
 from .models import LayeredModelBuilder
-from .solver import PlaceholderForwardSolver
 
 
 @dataclass
@@ -53,9 +51,13 @@ REQUIRED_FILES = (
     "ertm/interfaces.py",
     "ertm/exceptions.py",
     "ertm/logging_utils.py",
+    "ertm/numerics.py",
+    "ertm/propagation.py",
     "ertm/models.py",
     "ertm/solver.py",
     "ertm/imaging.py",
+    "ertm/preprocess.py",
+    "ertm/qcomp.py",
     "ertm/data.py",
     "ertm/visualization.py",
     "ertm/evaluation.py",
@@ -63,6 +65,7 @@ REQUIRED_FILES = (
     "ertm/diagnostics.py",
     "tests/__init__.py",
     "tests/test_structure.py",
+    "tests/test_rtm.py",
 )
 
 REQUIRED_DIRS = (
@@ -84,9 +87,13 @@ MODULES = (
     "ertm.interfaces",
     "ertm.exceptions",
     "ertm.logging_utils",
+    "ertm.numerics",
+    "ertm.propagation",
     "ertm.models",
     "ertm.solver",
     "ertm.imaging",
+    "ertm.preprocess",
+    "ertm.qcomp",
     "ertm.data",
     "ertm.visualization",
     "ertm.evaluation",
@@ -96,18 +103,26 @@ MODULES = (
 
 
 def _tiny_config(config: AppConfig) -> AppConfig:
-    """构造一个 21x16、20 步的微型配置，用于快速契约检查。"""
+    """构造一个 41x31、120 步的微型配置，用于快速契约检查。"""
     anomaly = config.model.anomaly
     if anomaly is not None:
-        anomaly = replace(anomaly, x=100.0, z=80.0, rx=10.0, rz=8.0)
+        anomaly = replace(anomaly, x=200.0, z=180.0, rx=30.0, rz=20.0)
     model = replace(config.model, anomaly=anomaly)
     return replace(
         config,
-        grid=GridConfig(nx=21, nz=16, dx=10.0, dz=10.0, x0=0.0, z0=0.0),
+        grid=GridConfig(nx=41, nz=31, dx=10.0, dz=10.0, x0=0.0, z0=0.0),
         model=model,
-        source=replace(config.source, x=100.0, z=5.0),
-        receivers=ReceiverConfig(count=5, x_start=0.0, x_end=200.0, z=5.0),
-        solver=SolverConfig(nt=20, dt=0.001, order=8, boundary="cpml", dtype="float32"),
+        source=replace(config.source, x=200.0, z=20.0, f0=50.0, delay=0.01),
+        receivers=ReceiverConfig(count=9, x_start=0.0, x_end=400.0, z=20.0),
+        solver=SolverConfig(
+            nt=400,
+            dt=2.5e-4,
+            order=8,
+            boundary="free",
+            dtype="float32",
+            engine="acoustic",
+            npml=6,
+        ),
     )
 
 
@@ -159,7 +174,7 @@ def _check_config() -> list[CheckResult]:
         results.append(
             CheckResult(
                 "微型配置",
-                tiny.grid.shape == (16, 21),
+                tiny.grid.shape == (31, 41),
                 f"shape={tiny.grid.shape}",
             )
         )
@@ -171,6 +186,9 @@ def _check_config() -> list[CheckResult]:
 def _check_components() -> list[CheckResult]:
     results: list[CheckResult] = []
     try:
+        from .imaging import build_imager
+        from .solver import build_solver
+
         config = _tiny_config(load_config())
         model = LayeredModelBuilder().build(config)
         results.append(
@@ -181,19 +199,25 @@ def _check_components() -> list[CheckResult]:
 
         source = _build_source(config)
         receivers = _build_receivers(config)
-        solver = PlaceholderForwardSolver(config.solver)
+        solver = build_solver(config.solver)
         shot = solver.forward(model, source, receivers)
         results.append(
             CheckResult(
                 "正演接口",
-                shot.data.shape == (config.solver.nt, receivers.nrec),
-                f"shape={shot.data.shape}",
+                shot.data.shape == (config.solver.nt, receivers.nrec)
+                and np.all(np.isfinite(shot.data)),
+                f"shape={shot.data.shape}, 峰值={np.abs(shot.data).max():.3e}",
             )
         )
 
-        image = ERTMImager(config.imaging).migrate(shot, model)
+        imager = build_imager(config.imaging, config.solver)
+        image = imager.migrate(shot, model)
         results.append(
-            CheckResult("成像接口", image.image.shape == model.shape, f"shape={image.image.shape}")
+            CheckResult(
+                "成像接口",
+                image.image.shape == model.shape and np.all(np.isfinite(image.image)),
+                f"shape={image.image.shape}, 峰值={np.abs(image.image).max():.3e}",
+            )
         )
 
         metrics = BasicEvaluator().evaluate(image, model, shot)
