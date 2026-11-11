@@ -23,6 +23,7 @@ files = [
     "untitled/components/ShotRecordCard.qml",
     "untitled/components/ShotRecordDialog.qml",
     "untitled/components/Sidebar.qml",
+    "untitled/components/SplashScreen.qml",
     "untitled/components/StatusChip.qml",
     "untitled/views/ConfigView.qml",
     "untitled/views/ModelCompareView.qml",

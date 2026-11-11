@@ -5,7 +5,8 @@
 
 > 板块按交付要求组织：**参数配置表 / 求解器源码 → 典型模型成像对比 →
 > RTM / Kirchhoff / 高斯束实测资料对比 → Q 补偿与稳定性检查**。
-> 算法核心仍由算法分工同学编写，界面用“占位 / 待接入”明确标识，不伪造物理结果。
+> 启动时显示加载封面；Q 补偿已接入 `ertm/qcomp.py`、`ertm/qc.py` 与
+> `output/viscoacoustic` 的真实运行产物，包括补偿前/后对比与 Q 模型。
 
 ## 1. 仓库中的位置
 
@@ -61,7 +62,7 @@ PyCharm 中打开仓库根目录，解释器选根目录 `.venv\Scripts\python.e
 | 速度模型 / 单炮记录 / 成像 | 深色 Vp/Vs/ρ 预览、单炮记录（当前为占位直达波）、PP 零场占位 | `output/models/model.npz`、`output/shots/shot.npz`、`output/images/image_pp.npz` |
 | 典型模型对比 | 溶洞、倾斜裂缝、交叉裂缝；模型 / ERTM / 参考偏移三栏 | 配置 + UI 模型预设（示意图，已标注） |
 | 实测资料对比 | RTM / Kirchhoff / 高斯束 / 差异 QC 四象限 | `data/`（当前未导入 SEG-Y，界面为占位态） |
-| Q 补偿 | Qp/Qs、GSLS、Gmax、αc、低通、增益曲线、点积/稳定性检查 | 配置 + 界面预设 |
+| Q 补偿 | GSLS 黏声补偿、Q 模型、补偿前后 QC、增益曲线、限幅/低通稳定性；可运行 viscoacoustic 配置 | `ertm/qcomp.py`、`ertm/qc.py`、`output/viscoacoustic` |
 | 求解器源码 | `ertm/*.py` 模块职责、行数、实现/占位/待建状态 | 仓库源码目录 |
 | 运行 | 调用 `main.py`，实时回传日志并刷新产物 | `QProcess` |
 
@@ -83,6 +84,8 @@ I/O 与流程，不是最终的弹性波场记录；点击卡片可查看完整�
 ![参数配置](screenshots/01_config.png)
 
 ![单炮记录说明](screenshots/06_shot_record.png)
+
+![Q 补偿](screenshots/04_qcomp.png)
 
 ![典型模型对比](screenshots/02_model_compare.png)
 

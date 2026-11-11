@@ -8,6 +8,7 @@ Item {
     property string source: ""
     property var info: ({})
     property bool compact: false
+    property string legendText: ""
 
     readonly property bool hasImage: source.length > 0 && image.status === Image.Ready
     readonly property real x0: isFinite(Number(info.x0)) ? Number(info.x0) : 0
@@ -123,9 +124,11 @@ Item {
             Text {
                 x: 16
                 anchors.verticalCenter: parent.verticalCenter
-                text: preview.placeholder
-                      ? (preview.compact ? "直达波" : "直达波（占位）")
-                      : "单炮记录"
+                text: preview.legendText.length > 0
+                      ? preview.legendText
+                      : (preview.placeholder
+                         ? (preview.compact ? "直达波" : "直达波（占位）")
+                         : "单炮记录")
                 color: "#a9c6d9"
                 font.family: Theme.fontUi
                 font.pixelSize: preview.compact ? 5 : 7
