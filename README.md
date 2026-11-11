@@ -149,10 +149,13 @@ SciPy、Numba、PyVista、Segyio、Pandas 为后续数值计算/三维/SEG-Y 预
 ## 9. Qt 求解器工作台（workbench）
 
 仓库中的 `workbench/` 是基于 PySide6 / Qt Quick 的 ERTM 可视化工作台：读取根目录的
-配置、模型、炮记录、成像产物和源码，并可直接调用 `main.py` 运行流水线。界面按
+配置、模型、单炮记录、成像产物和源码，并可直接调用 `main.py` 运行流水线。界面按
 “参数配置 → 典型模型成像对比 → 实测资料对比 → Q 补偿 → 求解器源码”组织，
 算法仍处于占位阶段时会明确标注“占位 / 待接入”。
 
 ![Qt 工作台](workbench/screenshots/01_config.png)
+
+“单炮记录”卡片展示时间 × 检波点的记录形式，点击可展开采集参数、直达波公式以及
+RTM 中检波点波场的用途说明。
 
 安装与运行方式见 [workbench/README.md](workbench/README.md)。

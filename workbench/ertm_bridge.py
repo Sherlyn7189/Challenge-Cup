@@ -131,6 +131,7 @@ class ErtmBridge(QObject):
     environmentChanged = Signal()
     lastRunChanged = Signal()
     realDataChanged = Signal()
+    shotInfoChanged = Signal()
     selectionChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -145,6 +146,7 @@ class ErtmBridge(QObject):
         self._previews: dict[str, str] = {}
         self._environment: dict[str, Any] = {}
         self._real_data: dict[str, Any] = {}
+        self._shot_info: dict[str, Any] = {}
         self._log = ""
         self._code = ""
         self._code_file = ""
@@ -263,6 +265,10 @@ class ErtmBridge(QObject):
     def realData(self) -> dict[str, Any]:
         return self._real_data
 
+    @Property("QVariantMap", notify=shotInfoChanged)
+    def shotInfo(self) -> dict[str, Any]:
+        return self._shot_info
+
     @Property(str, notify=codeChanged)
     def code(self) -> str:
         return self._code
@@ -357,6 +363,7 @@ class ErtmBridge(QObject):
         self.environmentChanged.emit()
         self.lastRunChanged.emit()
         self.realDataChanged.emit()
+        self.shotInfoChanged.emit()
 
     @Slot(str)
     def loadSource(self, relative: str) -> None:
@@ -612,6 +619,7 @@ class ErtmBridge(QObject):
                 }
             )
         self._metrics = rows
+        self._shot_info = self._build_shot_info(metrics, report)
 
         artifacts: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -637,6 +645,62 @@ class ErtmBridge(QObject):
         if report_path.is_file():
             stamp = datetime.fromtimestamp(report_path.stat().st_mtime)
             self._last_run = stamp.strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _as_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _build_shot_info(self, metrics: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+        """汇总单炮记录的采集参数与占位正演元数据，供界面解释卡片使用。"""
+        cfg = self._cfg or {}
+        grid = cfg.get("grid", {}) or {}
+        source = cfg.get("source", {}) or {}
+        receivers = cfg.get("receivers", {}) or {}
+        solver = cfg.get("solver", {}) or {}
+
+        nx = int(self._as_float(grid.get("nx"), 0))
+        dx = self._as_float(grid.get("dx"), 0.0)
+        x0 = self._as_float(grid.get("x0"), 0.0)
+        xmax = x0 + max(0, nx - 1) * dx
+        nrec = int(self._as_float(receivers.get("count"), 0))
+        nt = int(self._as_float(solver.get("nt"), 0))
+        dt = self._as_float(solver.get("dt"), 0.0)
+        shot_meta = report.get("shot_meta", {}) if report else {}
+        if not isinstance(shot_meta, dict):
+            shot_meta = {}
+        values = metrics.get("values", {}) if metrics else {}
+        if not isinstance(values, dict):
+            values = {}
+        available = False
+        if self._root is not None:
+            available = (self._root / "output" / "shots" / "shot.npz").is_file()
+
+        return {
+            "available": available,
+            "placeholder": bool(shot_meta.get("placeholder", True)),
+            "method": str(shot_meta.get("method", "—")),
+            "vmean": self._as_float(shot_meta.get("v_mean"), 0.0),
+            "nrec": nrec,
+            "nt": nt,
+            "dt": dt,
+            "tmax": nt * dt,
+            "f0": self._as_float(source.get("f0"), 0.0),
+            "delay": self._as_float(source.get("delay"), 0.0),
+            "source_kind": str(source.get("kind", "—")),
+            "component": str(receivers.get("component", "—")),
+            "sx": self._as_float(source.get("x"), 0.0),
+            "sz": self._as_float(source.get("z"), 0.0),
+            "rx0": self._as_float(receivers.get("x_start"), 0.0),
+            "rx1": self._as_float(receivers.get("x_end"), 0.0),
+            "rz": self._as_float(receivers.get("z"), 0.0),
+            "x0": x0,
+            "xmax": xmax,
+            "rms": self._as_float(values.get("shot_rms"), 0.0),
+            "absmax": self._as_float(values.get("shot_abs_max"), 0.0),
+        }
 
     @staticmethod
     def _artifact_entry(path: Path, kind: str) -> dict[str, Any]:

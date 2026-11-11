@@ -18,6 +18,7 @@ Item {
     readonly property var checks: bridge ? bridge.checks : []
 
     property int fieldIndex: 0
+    property bool shotDetailOpen: false
     readonly property var fieldKeys: [ "modelVp", "modelVs", "modelRho" ]
     readonly property var fieldNames: [ "Vp", "Vs", "ρ" ]
 
@@ -608,97 +609,23 @@ Item {
         }
     }
 
-    // ── 右栏 · 炮记录 ──────────────────────────────────────────
-    Rectangle {
+    // ── 右栏 · 单炮记录 ────────────────────────────────────────
+    ShotRecordCard {
         id: shotCard
         x: 450
         y: 300
         width: 290
-        height: 184
-        radius: 8
-        color: "#071a2a"
-        border.width: 1
-        border.color: "#123a54"
-
-        CardHeader {
-            width: parent.width
-            title: "炮记录 · vz"
-            tag: "直达波占位"
-            tagColor: "#efa63f"
-            divider: false
-        }
-
-        Rectangle {
-            x: 8
-            y: 36
-            width: parent.width - 16
-            height: 118
-            radius: 5
-            color: "#04111c"
-            border.width: 1
-            border.color: "#0e2c3f"
-            clip: true
-
-            Image {
-                id: shotImage
-                anchors.fill: parent
-                source: bridge ? (bridge.previews.shot || "") : ""
-                fillMode: Image.PreserveAspectFit
-                smooth: true
-                cache: false
-                asynchronous: true
-            }
-
-            Column {
-                anchors.centerIn: parent
-                spacing: 3
-                visible: shotImage.status !== Image.Ready
-
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "运行流水线后生成炮记录"
-                    color: "#5f8199"
-                    font.family: Theme.fontUi
-                    font.pixelSize: 8
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "output/shots/shot.npz"
-                    color: "#3f6479"
-                    font.family: Theme.fontMono
-                    font.pixelSize: 6
-                }
-            }
-
-            Text {
-                anchors.left: parent.left
-                anchors.leftMargin: 6
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 4
-                text: "t ↓ / x →"
-                color: "#4f7189"
-                font.family: Theme.fontMono
-                font.pixelSize: 6
-            }
-        }
-
-        Text {
-            x: 8
-            y: 160
-            text: "101 道 · 600 采样 · RMS " + view.metricValue("shot_rms")
-            color: "#4f7189"
-            font.family: Theme.fontMono
-            font.pixelSize: 7
-        }
+        height: 210
+        onShowDetails: view.shotDetailOpen = true
     }
 
     // ── 右栏 · 成像 ────────────────────────────────────────────
     Rectangle {
         id: imageCard
         x: 450
-        y: 494
+        y: 520
         width: 290
-        height: 122
+        height: 96
         radius: 8
         color: "#071a2a"
         border.width: 1
@@ -716,7 +643,7 @@ Item {
             x: 8
             y: 36
             width: parent.width - 16
-            height: 78
+            height: 52
             radius: 5
             color: "#04111c"
             border.width: 1
@@ -752,5 +679,11 @@ Item {
                 font.pixelSize: 7
             }
         }
+    }
+
+    ShotRecordDialog {
+        anchors.fill: parent
+        visible: view.shotDetailOpen
+        onClosed: view.shotDetailOpen = false
     }
 }

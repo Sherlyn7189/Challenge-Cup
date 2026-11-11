@@ -300,6 +300,7 @@ Window {
 
             Loader {
                 id: viewLoader
+                objectName: "viewLoader"
                 anchors.top: header.bottom
                 anchors.left: parent.left
                 anchors.right: parent.right

@@ -1,7 +1,7 @@
 # ERTM 弹性波逆时偏移求解器 · Qt 工作台
 
 `Challenge-Cup` 仓库的 Qt Quick 可视化工作台。界面读取仓库根目录下 ERTM 项目的真实配置、
-模型、炮记录、成像产物和源码，并通过 ERTM 虚拟环境直接运行 `main.py` 流水线。
+模型、单炮记录、成像产物和源码，并通过 ERTM 虚拟环境直接运行 `main.py` 流水线。
 
 > 板块按交付要求组织：**参数配置表 / 求解器源码 → 典型模型成像对比 →
 > RTM / Kirchhoff / 高斯束实测资料对比 → Q 补偿与稳定性检查**。
@@ -58,7 +58,7 @@ PyCharm 中打开仓库根目录，解释器选根目录 `.venv\Scripts\python.e
 | 板块 | 内容 | 数据来源 |
 |---|---|---|
 | 参数配置 | 网格、层状背景、异常体、震源、检波点、时间/空间格式、成像条件 | `config/default.json` |
-| 速度模型 / 炮记录 / 成像 | 深色 Vp/Vs/ρ 预览、真实炮记录、PP 零场占位 | `output/models/model.npz`、`output/shots/shot.npz`、`output/images/image_pp.npz` |
+| 速度模型 / 单炮记录 / 成像 | 深色 Vp/Vs/ρ 预览、单炮记录（当前为占位直达波）、PP 零场占位 | `output/models/model.npz`、`output/shots/shot.npz`、`output/images/image_pp.npz` |
 | 典型模型对比 | 溶洞、倾斜裂缝、交叉裂缝；模型 / ERTM / 参考偏移三栏 | 配置 + UI 模型预设（示意图，已标注） |
 | 实测资料对比 | RTM / Kirchhoff / 高斯束 / 差异 QC 四象限 | `data/`（当前未导入 SEG-Y，界面为占位态） |
 | Q 补偿 | Qp/Qs、GSLS、Gmax、αc、低通、增益曲线、点积/稳定性检查 | 配置 + 界面预设 |
@@ -68,7 +68,21 @@ PyCharm 中打开仓库根目录，解释器选根目录 `.venv\Scripts\python.e
 参数配置表为只读展示，直接读取 `config/default.json`；修改配置后按 `Ctrl+R` 或点击
 “刷新配置与产物”重新加载。
 
+### 单炮记录（Shot Record）
+
+震源在炮点激发一次，沿测线布设的 101 个检波器按时间记录波场振动，形成
+“时间 × 检波点”的二维记录 `(nt, nrec) = (600, 101)`：每一列是一道（trace），
+每一行是一个时刻。界面横轴为检波点 `x / m`（0–1000 m），纵轴为时间 `t / s`
+（0–0.6 s，向下增大），橙色三角标记炮点位置（x=500 m）。
+
+ERTM 会把这条记录时间反转后从检波点注入，得到检波点波场 `W_r`，再与正传源波场
+`W_s` 做零延迟互相关，形成成像值。当前 `PlaceholderForwardSolver` 只按
+`t = delay + r / v_mean` 生成直达波，因此界面标注为“直达波占位”，它用于验证
+I/O 与流程，不是最终的弹性波场记录；点击卡片可查看完整采集参数与说明。
+
 ![参数配置](screenshots/01_config.png)
+
+![单炮记录说明](screenshots/06_shot_record.png)
 
 ![典型模型对比](screenshots/02_model_compare.png)
 
@@ -85,7 +99,7 @@ PyCharm 中打开仓库根目录，解释器选根目录 `.venv\Scripts\python.e
   <repo>\.venv\Scripts\python.exe main.py --config config/default.json --log-level INFO
   ```
 
-- 运行结束后自动重读产物，刷新模型、炮记录和日志。
+- 运行结束后自动重读产物，刷新模型、单炮记录和日志。
 
 界面上的“运行流水线 / F5”会真实运行当前仓库的占位流水线（约 1–2 秒），
 并更新根目录 `output/` 下的产物。`output/` 默认被 `.gitignore` 忽略，不把运行结果
