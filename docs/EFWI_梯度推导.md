@@ -328,7 +328,7 @@ rho 的高斯方向在单元测试中误差略大，是因为密度总梯度中*
 .venv\Scripts\python.exe -m unittest tests.test_gradient -v
 ```
 
-当前完整测试集 **37 个测试全部通过**（含各向异性 epsilon/delta 梯度、
+当前完整测试集 **46 个测试全部通过**（含各向异性 epsilon/delta 梯度、
 单炮/多炮累积、伴随转置恒等式）。
 
 ---

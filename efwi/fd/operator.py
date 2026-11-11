@@ -151,6 +151,16 @@ class Elastic2DOperator:
         self._rjz = rw["vz"].j
         self._rwz = rw["vz"].w
 
+    def set_survey(self, survey: Survey) -> None:
+        """切换观测系统（多尺度频带使用带限子波时复用同一个算子）。"""
+        survey.validate_against_grid(self.grid, allow_sponge=True)
+        if survey.nt != self.survey.nt or survey.n_receivers != self.survey.n_receivers:
+            raise ValueError("新观测系统的 nt/nr 必须与原观测系统一致")
+        self.survey = survey
+        self.dt = survey.dt
+        self._setup_geometry()
+        self.set_model(self.model)
+
     def _pad(self, arr: np.ndarray) -> np.ndarray:
         return np.pad(np.asarray(arr, dtype=np.float64), self.pad, mode="edge")
 
@@ -273,6 +283,7 @@ class Elastic2DOperator:
                 "c33": np.zeros((self.NX, self.NZ), dtype=np.float64),
                 "c44": np.zeros((self.NX, self.NZ), dtype=np.float64),
                 "rho": np.zeros((self.NX, self.NZ), dtype=np.float64),
+                "theta": np.zeros((self.NX, self.NZ), dtype=np.float64),
             }
         else:
             h = None
@@ -282,6 +293,7 @@ class Elastic2DOperator:
         hc33 = h["c33"] if h is not None else dummy_h
         hc44 = h["c44"] if h is not None else dummy_h
         hrho = h["rho"] if h is not None else dummy_h
+        htheta = h["theta"] if h is not None else dummy_h
 
         storage = self._make_storage(nt) if store else None
         data = np.zeros((nt, self.survey.n_receivers, 2), dtype=np.float64)
@@ -325,6 +337,8 @@ class Elastic2DOperator:
                 self.dt, self.dx, self.dz, exx_out, ezz_out, exz_out,
                 hc11, hc13, hc33, hc44, 1 if hessian else 0,
             )
+            if hessian:
+                kernels.accumulate_theta_hessian(exx_out, ezz_out, self.dt, htheta)
             if record:
                 kernels.record_data(
                     vx, vz, self._rix, self._rjx, self._rwx,
@@ -562,7 +576,10 @@ class Elastic2DOperator:
             k: np.zeros(self.grid.shape, dtype=np.float64)
             for k in ("c11", "c13", "c33", "c44", "rho")
         }
-        h_sum = {k: np.zeros(self.grid.shape, dtype=np.float64) for k in g_sum}
+        h_sum = {
+            k: np.zeros(self.grid.shape, dtype=np.float64)
+            for k in ("c11", "c13", "c33", "c44", "rho", "theta")
+        }
         synthetic = np.empty(expected, dtype=np.float64)
         residuals = np.empty(expected, dtype=np.float64)
         total = 0.0
@@ -579,6 +596,7 @@ class Elastic2DOperator:
             total += shot.misfit_raw
             for key in g_sum:
                 g_sum[key] += shot.g[key]
+            for key in h_sum:
                 h_sum[key] += shot.h[key]
 
         total /= energy

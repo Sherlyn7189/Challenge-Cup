@@ -30,7 +30,8 @@ import numpy as np
 from .config import FWIConfig, GridConfig, StageConfig
 from .constraints import ModelConstraints
 from .fd import Elastic2DOperator
-from .filters import WienerFilter
+from .filters import WienerFilter, validate_stages
+from .geometry import Survey
 from .gradient import PhysicalGradient, convert_gradient, precondition
 from .model import ElasticModel
 from .optimize import LBFGS, limit_step, parabolic_line_search
@@ -48,6 +49,7 @@ class FWIResult:
     true_model: ElasticModel | None = None
     elapsed: float = 0.0
     stage_summaries: list[dict[str, Any]] = field(default_factory=list)
+    stage_models: list[ElasticModel] = field(default_factory=list)
 
     def metrics(self) -> dict[str, Any]:
         out = {
@@ -136,9 +138,9 @@ class ElasticFWI:
         self,
         model: ElasticModel,
         obs: np.ndarray,
-        filt: WienerFilter,
+        syn_filter: WienerFilter | None = None,
     ) -> tuple[Any, PhysicalGradient, dict[str, np.ndarray], np.ndarray, np.ndarray]:
-        result = self.op.compute_gradient(model, obs, syn_filter=filt)
+        result = self.op.compute_gradient(model, obs, syn_filter=syn_filter)
         pg = convert_gradient(result, model, self.config.params)
         g_true_x = self.space.gradient_to_space(pg.g, model)
         if self.config.pseudo_hessian:
@@ -147,6 +149,10 @@ class ElasticFWI:
                 pg.h,
                 damping=self.config.ph_damping,
                 smooth=float(self.config.ph_smooth),
+                normalize=self.config.ph_normalize,
+                water_level=self.config.ph_water_level,
+                max_gain=self.config.ph_max_gain,
+                min_h=self.config.ph_min_h,
             )
         else:
             g_pre = {k: v.copy() for k, v in pg.g.items()}
@@ -156,11 +162,12 @@ class ElasticFWI:
     # ------------------------------------------------------------------
     def run(self) -> FWIResult:
         t_start = time.time()
+        validate_stages(self.config.stages, self.survey.dt)
         model = self.initial_model.copy()
         x = self.space.pack(model)
         total_iter = 0
         stage_summaries: list[dict[str, Any]] = []
-        last_filter: WienerFilter | None = None
+        stage_models: list[ElasticModel] = []
 
         for si, stage in enumerate(self.config.stages):
             if stage.n_iter <= 0:
@@ -175,10 +182,23 @@ class ElasticFWI:
                 self.observed, self.survey.dt, stage.f_low, stage.f_high,
                 time_axis=1,
             )
-            last_filter = filt
             obs_f = filt.apply(self.observed, axis=1)
+            # 用带限子波正演：这样伪 Hessian 也是当前频带的照明，而不是
+            # 全频带照明；线性滤波下等价于对合成数据做同带滤波。
+            stage_wavelet = filt.apply(self.survey.wavelet[:, None], axis=0).ravel()
+            stage_survey = Survey(
+                self.survey.shots,
+                self.survey.receivers,
+                self.survey.nt,
+                self.survey.dt,
+                stage_wavelet,
+                self.survey.source_kind,
+                self.survey.amplitude,
+                dict(self.survey.meta),
+            )
+            self.op.set_survey(stage_survey)
             lbfgs = LBFGS(memory=self.config.lbfgs_memory)
-            res, pg, g_pre, g_x, g_true_x = self._evaluate_gradient(model, obs_f, filt)
+            res, pg, g_pre, g_x, g_true_x = self._evaluate_gradient(model, obs_f, None)
             f_current = res.misfit
             stage_start_misfit = f_current
             self._record(total_iter, si, stage, f_current, 0.0, 0, 0.0, res, model, "start")
@@ -192,10 +212,10 @@ class ElasticFWI:
                     d = limit_step(d, self.config.max_rel_step)
                     lbfgs.reset()
 
-                def evaluate(alpha: float, _x=x, _d=d, _model=model, _obs=obs_f, _filt=filt) -> float:
+                def evaluate(alpha: float, _x=x, _d=d, _model=model, _obs=obs_f) -> float:
                     trial = self.space.unpack(_x + alpha * _d, _model)
                     trial = self._clip_bounds(trial)
-                    return self.op.misfit(trial, _obs, syn_filter=_filt)
+                    return self.op.misfit(trial, _obs, syn_filter=None)
 
                 ls = parabolic_line_search(
                     evaluate,
@@ -231,7 +251,7 @@ class ElasticFWI:
                 x_new = self.space.pack(model_new)
 
                 res_new, pg_new, g_pre_new, g_x_new, g_true_new = self._evaluate_gradient(
-                    model_new, obs_f, filt
+                    model_new, obs_f, None
                 )
                 f_new = res_new.misfit
                 s = x_new - x
@@ -263,13 +283,23 @@ class ElasticFWI:
                             print("  目标函数已基本不再下降，提前结束该频带")
                         break
 
+            n_done = sum(
+                1 for h in self.history
+                if h["stage"] == stage.name and h["kind"] == "iter"
+            )
             stage_summaries.append(
                 {
                     "stage": stage.name,
                     "f_low": stage.f_low,
                     "f_high": stage.f_high,
+                    "target_iter": stage.n_iter,
+                    "iter_done": n_done,
                     "start_misfit": stage_start_misfit,
                     "end_misfit": f_current,
+                    "misfit_reduction_pct": 100.0 * (1.0 - f_current / max(stage_start_misfit, 1e-30)),
+                    "vp_range": [float(model.vp.min()), float(model.vp.max())],
+                    "vs_range": [float(model.vs.min()), float(model.vs.max())],
+                    "rho_range": [float(model.rho.min()), float(model.rho.max())],
                 }
             )
             if self.verbose:
@@ -277,7 +307,10 @@ class ElasticFWI:
                     f"  stage end: {stage_start_misfit:.6e} -> {f_current:.6e}, "
                     f"约束违反={self.constraints.violations(model)}"
                 )
+            stage_models.append(model.copy())
 
+        # 恢复全频带观测系统，输出原始（未分频带）合成炮集
+        self.op.set_survey(self.survey)
         synthetic = self.op.forward_all(model)
         elapsed = time.time() - t_start
         return FWIResult(
@@ -290,6 +323,7 @@ class ElasticFWI:
             true_model=self.true_model,
             elapsed=elapsed,
             stage_summaries=stage_summaries,
+            stage_models=stage_models,
         )
 
     # ------------------------------------------------------------------
@@ -334,6 +368,8 @@ def save_result(result: FWIResult, outdir: str, *, save_data: bool = False) -> s
     result.initial_model.save(os.path.join(outdir, "model_initial.npz"))
     if result.true_model is not None:
         result.true_model.save(os.path.join(outdir, "model_true.npz"))
+    for i, stage_model in enumerate(getattr(result, "stage_models", [])):
+        stage_model.save(os.path.join(outdir, f"model_stage_{i + 1:02d}.npz"))
     with open(os.path.join(outdir, "history.json"), "w", encoding="utf-8") as fh:
         json.dump(
             {"history": result.history, "stages": result.stage_summaries, "metrics": result.metrics()},

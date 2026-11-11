@@ -139,7 +139,10 @@ class ShotGradientAccumulator:
             k: np.zeros(shape, dtype=np.float64)
             for k in ("c11", "c13", "c33", "c44", "rho")
         }
-        self._h_native = {k: np.zeros(shape, dtype=np.float64) for k in self._g_native}
+        self._h_native = {
+            k: np.zeros(shape, dtype=np.float64)
+            for k in ("c11", "c13", "c33", "c44", "rho", "theta")
+        }
         self._misfit_raw = 0.0
         self.shots: list[ShotAdjoint] = []
         self.meta: dict[str, Any] = {}
@@ -152,6 +155,7 @@ class ShotGradientAccumulator:
             self._h[key] += pg.h[key]
         for key in self._g_native:
             self._g_native[key] += shot.g[key]
+        for key in self._h_native:
             self._h_native[key] += shot.h[key]
         item = ShotAdjoint(
             shot=shot.shot,

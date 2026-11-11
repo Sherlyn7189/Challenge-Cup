@@ -153,8 +153,12 @@ class FWIConfig:
 
     # 伪 Hessian 预处理
     pseudo_hessian: bool = True
-    ph_damping: float = 1e-3
-    ph_smooth: int = 2
+    ph_damping: float = 1e-3       # 相对水层：eta*max(H)
+    ph_water_level: float = 0.0    # 额外相对水层
+    ph_min_h: float = 0.0          # 绝对水层
+    ph_max_gain: float = 20.0      # 预条件最大放大倍数（相对中位增益）
+    ph_smooth: int = 2             # 仅稳定 H 对角估计，不替代 H
+    ph_normalize: bool = True      # 预条件后按原始梯度 RMS 归一化
 
     # 正演/存储
     storage_mb: float = 512.0
@@ -176,6 +180,10 @@ class FWIConfig:
                     self.params = self.params + (key,)
         if self.ph_damping <= 0:
             raise ValueError("ph_damping 必须为正")
+        if self.ph_water_level < 0 or self.ph_min_h < 0:
+            raise ValueError("ph_water_level/ph_min_h 不能为负")
+        if self.ph_max_gain <= 0:
+            raise ValueError("ph_max_gain 必须为正")
         if self.dtype not in ("float32", "float64"):
             raise ValueError("dtype 只能是 float32/float64")
 

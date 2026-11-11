@@ -225,13 +225,17 @@ $$
 | 2–8 Hz | 25 | 建立大尺度构造，缓解周跳/局部极小 |
 | 3–15 Hz | 25 | 刻划细节 |
 
-每个频带重新设计滤波器、重置 L-BFGS。目标函数用观测能量归一化，便于跨频带比较。
+每个频带重新设计滤波器、重置 L-BFGS，并把滤波响应同时作用到震源子波，
+用**带限子波正演**；这样伪 Hessian 是当前频带的照明，而不是全频带照明。
+目标函数用观测能量归一化，便于跨频带比较。频率递进与 Nyquist 校验见
+[docs/EFWI_梯度预处理与多尺度.md](EFWI_梯度预处理与多尺度.md)。
 
 ---
 
 ## 5. 伪 Hessian 照明补偿
 
-全 Hessian 成本不可接受；高频 + 无限孔径近似下只保留对角元。正演时累积：
+全 Hessian 成本不可接受；高频 + 无限孔径近似下只保留参数空间虚拟源的对角元。
+正演时累积：
 
 $$
 H_{C11}=\sum \dot\varepsilon_{xx}^2,\quad
@@ -241,17 +245,30 @@ H_{C44}=\sum \dot\varepsilon_{xz}^2,
 $$
 
 $$
-H_\rho=\sum\left[\left(\frac{a_x}{\rho_x}\right)^2+\left(\frac{a_z}{\rho_z}\right)^2\right].
+H_\rho^{\text{mass}}=\sum\left[\left(\frac{a_x}{\rho_x}\right)^2+
+\left(\frac{a_z}{\rho_z}\right)^2\right],\quad
+H_\theta=\sum(\dot\varepsilon_{xx}+\dot\varepsilon_{zz})^2.
 $$
+
+各向同性 vp 使用直接虚拟源，而不是 C 分量的链式平方：
+
+$$
+H_{v_p}=8\rho^2v_p^2H_\theta,\qquad
+H_{v_s}=16\rho^2v_s^2(H_{C11}+H_{C33})+4\rho^2v_s^2H_{C44}.
+$$
+
+rho 使用质量项 + 刚度链式项；VTI/HTI 使用 `dC/dp` 的对角链式近似。
 
 预条件：
 
 $$
-g^{\text{pre}}_p=\frac{g_p}{H_p+\eta\max H_p}.
+g^{\text{pre}}_p=
+\frac{g_p}{H_p+\eta\max H_p+\eta_w\max H_p+h_{\min}},
 $$
 
-`eta` 默认 `1e-3`，`H` 做高斯平滑（默认 2 个网格）。物理意义是补偿中深部
-照明不足，使梯度能量在空间上更均衡。
+并用 `ph_max_gain` 限制相对中位增益的放大倍数，非有限值清零。
+`H` 的高斯平滑（默认 2 个网格）只用于稳定对角估计，不替代虚拟源平方积分。
+参数与稳定性测试详见 [docs/EFWI_梯度预处理与多尺度.md](EFWI_梯度预处理与多尺度.md)。
 
 ---
 
@@ -480,6 +497,8 @@ for outer in 1..N:
 | `test_forward` | 各向同性/各向异性/力源稳定性、零残差 |
 | `test_adjoint` | 一步正演/伴随的内积恒等式（离散转置） |
 | `test_gradient` | 三个参数 × 两个方向 + 随机观测数据的有限差分方向导数、逐炮累积、残差/目标函数、H 非负 |
+| `test_precondition` | H 非负、解析预条件公式、弱照明稳定性、空间增益变化 |
+| `test_multiscale` | 频带校验、Wiener 响应、频带能量、两阶段反演推进 |
 | `scripts/check_gradient.py` | 演示尺度上的梯度检验并输出 JSON |
 | `test_anisotropy` | VTI 的 epsilon/delta 梯度 vs 有限差分 |
 | `test_optimize` | L-BFGS 下降方向、抛物线线搜索 |
@@ -488,7 +507,7 @@ for outer in 1..N:
 | `test_workflow` | 三维建模、中心剖面反馈 |
 | `test_pipeline` | EFWI 降低 misfit、RTM/倾角、top mute |
 
-当前全部 37 个测试通过。
+当前全部 46 个测试通过。
 
 ---
 

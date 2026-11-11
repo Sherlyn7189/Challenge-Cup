@@ -39,6 +39,9 @@
 # 梯度有限差分方向导数检验（打印逐参数误差并写 JSON）
 .venv\Scripts\python.exe scripts\check_gradient.py
 
+# 伪 Hessian 预条件 + 多尺度频带对比图/报告
+.venv\Scripts\python.exe scripts\run_preconditioning_demo.py
+
 # 全部单元测试
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
@@ -265,21 +268,34 @@ Lagrange 乘子）；用推进前的 `v~^{n+1/2}` 会随记录长度累积误差
 `10^-6`、rho 约 `10^-7`。多炮累积通过 `compute_shot_gradient` +
 `ShotGradientAccumulator` 显式实现。
 
-### 5.3 多尺度 Wiener
+### 5.3 多尺度 Wiener 与调度
 
 以当前炮集为参考，构造 Butterworth 带通目标 `y`，频域最小二乘
 `H(f)=Pxy/(Pxx+eps)`，加频带掩膜和平滑；作用到所有炮集。零相位，不引入走时偏差。
 
+每一阶段同时把响应作用到震源子波，使用**带限子波正演**，因此当前阶段的
+伪 Hessian 对应当前频带照明。默认 2–8 Hz、3–15 Hz 两个阶段；`validate_stages`
+强制高截频单调递进且低于 0.95 Nyquist。详见
+[docs/EFWI_梯度预处理与多尺度.md](docs/EFWI_梯度预处理与多尺度.md)。
+
 ### 5.4 伪 Hessian
 
-高频 + 无限孔径近似下只保留对角元。正演时顺带累积
-`H_C11=∫exx^2`、`H_C13=∫(exx^2+ezz^2)`、`H_C33=∫ezz^2`、
-`H_C44=∫exz^2`、`H_rho=∫((ax/rho_x)^2+(az/rho_z)^2)`，
-再链式转换；预条件：
+高频 + 无限孔径近似下只保留参数空间虚拟源的对角：
 
 ```
-g_pre = g / (H + eps * max(H))
+H_vp = 8*rho^2*vp^2*∫theta^2 dt,  theta=exx+ezz
+H_vs = 16*rho^2*vs^2*∫(exx^2+ezz^2)dt + 4*rho^2*vs^2*∫exz^2dt
+H_rho = H_rho_mass + 刚度链式项
 ```
+
+预条件：
+
+```
+g_pre = g / (H + eta*max(H) + water_level*max(H) + min_h)
+```
+
+并用中位增益 cap（`ph_max_gain=20`）、非有限值清零防止深部弱照明放大。
+`H` 的高斯平滑只用于稳定对角估计，不替代上述虚拟源计算。
 
 ### 5.5 约束投影
 
@@ -329,4 +345,5 @@ g_pre = g / (H + eps * max(H))
 详细公式与设计说明见：
 
 * [docs/EFWI_设计与实现.md](docs/EFWI_设计与实现.md) — 正演、多尺度、伪 Hessian、约束、RTM、测井、闭环；
-* [docs/EFWI_梯度推导.md](docs/EFWI_梯度推导.md) — 残差/目标函数、伴随源、离散伴随、密度时间顺序、链式梯度、逐炮累积、有限差分检验结果与接口。
+* [docs/EFWI_梯度推导.md](docs/EFWI_梯度推导.md) — 残差/目标函数、伴随源、离散伴随、密度时间顺序、链式梯度、逐炮累积、有限差分检验结果与接口；
+* [docs/EFWI_梯度预处理与多尺度.md](docs/EFWI_梯度预处理与多尺度.md) — 伪 Hessian 定义/计算、预条件稳定性、Wiener 频带与调度策略、对比图和测试报告。

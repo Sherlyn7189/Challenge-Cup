@@ -44,8 +44,21 @@ class PseudoHessian:
         *,
         damping: float = 1e-3,
         smooth: float = 2.0,
+        normalize: bool = True,
+        water_level: float = 0.0,
+        max_gain: float = 20.0,
+        min_h: float = 0.0,
     ) -> dict[str, np.ndarray]:
-        return precondition(gradient, self.diagonal, damping=damping, smooth=smooth)
+        return precondition(
+            gradient,
+            self.diagonal,
+            damping=damping,
+            smooth=smooth,
+            normalize=normalize,
+            water_level=water_level,
+            max_gain=max_gain,
+            min_h=min_h,
+        )
 
     def illumination(self) -> np.ndarray:
         """归一化照明场，用于绘图（多参数取平均）。"""
@@ -53,3 +66,25 @@ class PseudoHessian:
         out = np.mean(fields, axis=0) if fields else np.zeros((1, 1))
         m = float(np.max(out))
         return out / (m + 1e-30)
+
+    def stats(self, gradient: dict[str, np.ndarray] | None = None) -> dict[str, dict[str, float]]:
+        """伪 Hessian / 梯度的统计量，用于测试报告和稳定性检查。"""
+        out: dict[str, dict[str, float]] = {}
+        for key, hk in self.diagonal.items():
+            hk = np.asarray(hk, dtype=np.float64)
+            finite = hk[np.isfinite(hk)]
+            row = {
+                "h_min": float(np.min(finite)) if finite.size else 0.0,
+                "h_max": float(np.max(finite)) if finite.size else 0.0,
+                "h_median": float(np.median(finite)) if finite.size else 0.0,
+                "h_zero_fraction": float(np.mean(finite <= 0.0)) if finite.size else 1.0,
+                "h_dynamic_range_db": float(
+                    20.0 * np.log10((np.max(finite) + 1e-30) / (np.median(finite) + 1e-30))
+                ) if finite.size else 0.0,
+            }
+            if gradient is not None and key in gradient:
+                gk = np.asarray(gradient[key], dtype=np.float64)
+                row["g_rms"] = float(np.sqrt(np.mean(gk * gk)))
+                row["g_max"] = float(np.max(np.abs(gk)))
+            out[key] = row
+        return out

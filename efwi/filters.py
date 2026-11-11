@@ -228,3 +228,68 @@ def frequency_spectrum(data: np.ndarray, dt: float, *, time_axis: int = 0) -> tu
     spec = np.mean(np.abs(np.fft.rfft(flat, axis=0)), axis=1)
     freqs = np.fft.rfftfreq(arr.shape[0], d=dt)
     return freqs, spec
+
+
+def validate_stages(
+    stages: list[StageConfig],
+    dt: float,
+    *,
+    nyquist_fraction: float = 0.95,
+) -> None:
+    """检查多尺度频带：频率单调递进、低截频小于高截频、低于 Nyquist。"""
+    if not stages:
+        raise ValueError("至少需要一个频带")
+    nyq = 0.5 / dt
+    previous_high = 0.0
+    for i, s in enumerate(stages):
+        if s.f_low <= 0 or s.f_low >= s.f_high:
+            raise ValueError(f"stage {i}: 需要 0 < f_low < f_high")
+        if s.f_high >= nyquist_fraction * nyq:
+            raise ValueError(
+                f"stage {i}: f_high={s.f_high:g} Hz 超过 Nyquist 安全上限 "
+                f"{nyquist_fraction * nyq:g} Hz"
+            )
+        if s.f_high < previous_high:
+            raise ValueError(
+                f"stage {i}: 高截频 {s.f_high:g} Hz 低于上一阶段 {previous_high:g} Hz，"
+                "多尺度应从低频向高频递进"
+            )
+        previous_high = s.f_high
+
+
+def schedule_table(stages: list[StageConfig], dt: float) -> list[dict[str, float]]:
+    """频带调度表（频率范围、迭代数、波长、Nyquist 占比）。"""
+    validate_stages(stages, dt)
+    nyq = 0.5 / dt
+    rows = []
+    for i, s in enumerate(stages):
+        rows.append(
+            {
+                "stage": i + 1,
+                "name": s.name,
+                "f_low": float(s.f_low),
+                "f_high": float(s.f_high),
+                "n_iter": float(s.n_iter),
+                "bandwidth": float(s.f_high - s.f_low),
+                "nyquist_fraction": float(s.f_high / nyq),
+            }
+        )
+    return rows
+
+
+def band_energy_fractions(
+    data: np.ndarray,
+    dt: float,
+    stages: list[StageConfig],
+    *,
+    time_axis: int = 0,
+) -> list[float]:
+    """各频带能量占全频带能量的比例，用于数据/滤波结果诊断。"""
+    freqs, spec = frequency_spectrum(data, dt, time_axis=time_axis)
+    power = spec ** 2
+    total = float(np.sum(power)) + 1e-30
+    out = []
+    for s in stages:
+        mask = (freqs >= s.f_low) & (freqs <= s.f_high)
+        out.append(float(np.sum(power[mask]) / total))
+    return out

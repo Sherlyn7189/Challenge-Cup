@@ -109,6 +109,20 @@ def update_stress(
 
 
 @njit(cache=True, fastmath=True)
+def accumulate_theta_hessian(exx, ezz, dt, h_theta):
+    """累积 ``∫(div v)^2 dt``，用于各向同性 vp 的参数空间伪 Hessian。
+
+    对 vp 的虚拟源为 ``2*rho*vp*(exx+ezz)``（sxx/szz 各一份），
+    因此 ``H_vp = 2 * ∫(2*rho*vp*theta)^2 dt = 8*rho^2*vp^2*H_theta``。
+    """
+    nx, nz = exx.shape
+    for i in range(1, nx - 1):
+        for j in range(1, nz - 1):
+            theta = exx[i, j] + ezz[i, j]
+            h_theta[i, j] += dt * theta * theta
+
+
+@njit(cache=True, fastmath=True)
 def apply_damping(field, damp):
     nx, nz = field.shape
     for i in range(nx):
