@@ -122,7 +122,10 @@
     "n_mechanisms": 3,
     "band_ratio": 1.5,
     "amplitude_cap": 50.0,
-    "lowpass_interval": 20
+    "lowpass_interval": 20,
+    "f_max": 60.0,
+    "gain_budget_db": 40.0,
+    "compare": true
   },
   "output": {
     "root": "output/viscoacoustic",

@@ -54,6 +54,8 @@ class FiniteDifferenceSolver:
             alpha_c=float(self.q_config.alpha_c),
             amplitude_cap=float(self.q_config.amplitude_cap),
             lowpass_interval=int(self.q_config.lowpass_interval),
+            f_max=None if self.q_config.f_max is None else float(self.q_config.f_max),
+            gain_budget_db=float(self.q_config.gain_budget_db),
         )
 
     # ---------------------------------------------------------------- 规格

@@ -45,6 +45,9 @@ output/
 ├── images/model.png            # 模型、炮集、指标图
 ├── images/shot.png
 ├── images/metrics.png
+├── images/q_compare.png        # 仅 q.compare=true：补偿前/后/差值
+├── images/q_gain.png           # 仅 q.compare=true：各机制补偿强度
+├── models/q_model.npz/.png     # 仅 q.compare=true：Qp/Qs 模型
 └── reports/
     ├── config_snapshot.json
     ├── metrics.json
@@ -133,8 +136,17 @@ SeismicProjectERTM/
 
   `τ^σ_l、Δ_l` 由 `fit_gsls` 对目标 Q 做常 Q 频带拟合（L=3 时 0.67–1.5 倍频带内
   Q 偏差 < 1e-4）；模型里每个 Q 值单独拟合，逐点装配 `a_l, b_l, K_R`，因此
-  分层/异常体可以有不同 Q。补偿时把 `Δ_l` 乘 `−α_c`（Q 的逆过程），用
-  振幅上限 `amplitude_cap` 与时变低通 `lowpass_interval` 两道保险稳定指数增长。
+  分层/异常体可以有不同 Q。补偿时把 `Δ_l` 乘 `−α_l`（Q 的逆过程），并做三层正则化：
+
+1. **带限**：峰值频率 `f_l > f_max` 的机制不参与补偿（默认不限，演示取 60 Hz）；
+2. **增益预算**：`α_l = min(α_c, ln(G_max)·Q/(π·f_l·T))`，保证记录末端总增益
+   不超过 `gain_budget_db`（默认 40 dB = 100 倍）；
+3. **安全网**：振幅上限 `amplitude_cap` + 每 `lowpass_interval` 步的时变低通。
+
+`q.compare=true` 时额外跑一遍不补偿的 RTM，输出 `q_compare.png/.json`
+（补偿前/后/差值 + 指标）、`q_gain.png`（增益曲线）、`models/q_model.npz/.png`
+（Q 模型）。完整推导、稳定性分析与验证见
+[docs/Q补偿成像_设计与实现.md](docs/Q补偿成像_设计与实现.md)。
 
 ## 5. 关键配置（`config/default.json`）
 

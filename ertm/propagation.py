@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from . import numerics as num
+from .viscoelastic import normalized_modulus
 from .config import SolverConfig
 from .exceptions import SolverError
 from .logging_utils import get_logger
@@ -138,6 +139,8 @@ class QOptions:
     alpha_c: float = 1.0
     amplitude_cap: float = 50.0
     lowpass_interval: int = 20
+    f_max: float | None = None
+    gain_budget_db: float = 40.0
 
     def validate(self) -> None:
         if self.f_ref <= 0:
@@ -150,6 +153,10 @@ class QOptions:
             raise ValueError("q.alpha_c 必须在 [0, 1] 内")
         if self.amplitude_cap < 1.0:
             raise ValueError("q.amplitude_cap 必须 ≥ 1")
+        if self.f_max is not None and self.f_max <= 0:
+            raise ValueError("q.f_max 必须为正或 None")
+        if not 0.0 < self.gain_budget_db <= 200.0:
+            raise ValueError("q.gain_budget_db 必须在 (0, 200] 内")
 
 
 # ----------------------------------------------------------------------------
@@ -589,19 +596,59 @@ class ViscoacousticPropagator(Propagator2D):
                 if tau.size < n:
                     tau_sigma[i, tau.size :] = tau[-1]
                 delta[i, : dlt.size] = dlt
-                from .viscoelastic import normalized_modulus
-
                 modulus_ref[i] = float(
                     np.real(
                         normalized_modulus(tau, dlt, [self.q_options.f_ref])[0]
                     )
                 )
         index = np.searchsorted(unique, values).reshape(self.shape)
-        sign = -1.0 if self.q_options.compensation else 1.0
-        scale = self.q_options.alpha_c if self.q_options.compensation else 1.0
-
         tau_node = tau_sigma[index]  # (nz, nx, n)
-        delta_node = delta[index] * (sign * scale)
+
+        if self.q_options.compensation:
+            # ---- 带限 + 增益预算正则化（逐机制、逐 Q 值）------------------
+            # 1) 频带上限：峰值频率高于 f_max 的机制不参与补偿（保留其正向衰减）
+            # 2) 增益预算：机制 l 在记录末端 T 的累积增益不得超过 G_max，
+            #    因此把强度缩为 alpha_l = min(alpha_c, ln(G_max)·Q/(π·f_l·T))
+            time_total = max(self.nt * self.dt, self.dt)
+            budget = 10.0 ** (float(self.q_options.gain_budget_db) / 20.0)
+            f_max = self.q_options.f_max
+            alpha_table = np.zeros((unique.size, n))
+            f_peak_table = np.zeros((unique.size, n))
+            for i, value in enumerate(unique):
+                tau = tau_sigma[i]
+                f_peak = np.sqrt(np.maximum(1.0 - delta[i], 1e-6)) / (2.0 * np.pi * tau)
+                f_peak_table[i] = f_peak
+                keep = np.ones(n, dtype=bool)
+                if f_max is not None:
+                    keep = f_peak <= float(f_max)
+                needed = np.log(budget) * max(float(value), 1.0) / (
+                    np.pi * np.maximum(f_peak, 1e-6) * time_total
+                )
+                alpha = np.minimum(float(self.q_options.alpha_c), needed)
+                alpha = np.where(keep, alpha, 0.0)
+                alpha_table[i] = alpha
+                # 只翻转松弛强度，K_R 仍按“物理介质”标定：
+                # 补偿算子 = 同一 GSLS 模型、同一 K_R、同一 τ，仅 Δ→−αΔ
+                # （满足“补偿模型与正演物理模型一致”的约束）
+                delta[i] = -alpha * delta[i]
+            self.alpha_mechanisms = tuple(
+                float(v) for v in np.mean(alpha_table, axis=0)
+            )
+            self.f_peak_mechanisms = tuple(
+                float(v) for v in np.mean(f_peak_table, axis=0)
+            )
+        else:
+            self.alpha_mechanisms = tuple(float(self.q_options.alpha_c) for _ in range(n))
+            self.f_peak_mechanisms = tuple(
+                float(v)
+                for v in np.mean(
+                    np.sqrt(np.maximum(1.0 - delta, 1e-6))
+                    / (2.0 * np.pi * tau_sigma),
+                    axis=0,
+                )
+            )
+
+        delta_node = delta[index]
         k_relaxed = (self.kappa_relaxed / modulus_ref[index]).astype(self.dtype)
 
         self.tau_sigma = np.moveaxis(tau_node, -1, 0)
@@ -693,6 +740,7 @@ class ViscoacousticPropagator(Propagator2D):
             self._clipped = getattr(self, "_clipped", 0) + 1
         interval = int(self.q_options.lowpass_interval)
         if interval > 1 and self.step_index % interval == 0:
+            self._lowpass_steps = getattr(self, "_lowpass_steps", 0) + 1
             time = self.step_index * self.dt
             ratio = max(0.9 - 0.4 * min(time / 1.0, 1.0), 0.35)
             self.p[:] = num.lowpass_wavenumber(self.p, dx=self.dx, dz=self.dz,
@@ -738,7 +786,14 @@ class ViscoacousticPropagator(Propagator2D):
             "q_fit_error": float(self.q_fit_error),
             "compensation": bool(self.q_options.compensation),
             "alpha_c": float(self.q_options.alpha_c),
+            "alpha_mechanisms": list(getattr(self, "alpha_mechanisms", ())),
+            "f_peak_mechanisms_hz": [
+                round(v, 1) for v in getattr(self, "f_peak_mechanisms", ())
+            ],
+            "f_max": None if self.q_options.f_max is None else float(self.q_options.f_max),
+            "gain_budget_db": float(self.q_options.gain_budget_db),
             "clipped": int(getattr(self, "_clipped", 0)),
+            "lowpass_steps": int(getattr(self, "_lowpass_steps", 0)),
         }
 
 

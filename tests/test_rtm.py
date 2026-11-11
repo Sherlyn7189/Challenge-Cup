@@ -48,7 +48,14 @@ from ertm.viscoelastic import (  # noqa: E402
 )
 from ertm.propagation import QOptions, ViscoacousticPropagator, source_wavelet  # noqa: E402
 from ertm.solver import build_solver  # noqa: E402
-from ertm.types import ElasticModel, GridSpec, ReceiverSpec, ShotRecord, SourceSpec  # noqa: E402
+from ertm.types import (  # noqa: E402
+    ElasticModel,
+    GridSpec,
+    ImageResult,
+    ReceiverSpec,
+    ShotRecord,
+    SourceSpec,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -464,6 +471,136 @@ class TestGSLSViscoacoustic(unittest.TestCase):
         compensated = migrate(1.0)
         self.assertGreater(compensated, 1.15 * baseline,
                            f"补偿未提升深部振幅: {baseline:.3e} -> {compensated:.3e}")
+
+
+class TestQCompensationDesign(unittest.TestCase):
+    """Q 补偿算子的设计约束：频率相关、带限、增益预算、对比指标。"""
+
+    @staticmethod
+    def _homogeneous(qp: float) -> ElasticModel:
+        grid = GridSpec(nx=121, nz=101, dx=10.0, dz=10.0)
+        shape = grid.shape
+        return ElasticModel(
+            grid=grid,
+            vp=np.full(shape, 3000.0, dtype=np.float32),
+            vs=np.full(shape, 1700.0, dtype=np.float32),
+            rho=np.full(shape, 2400.0, dtype=np.float32),
+            qp=np.full(shape, qp, dtype=np.float32),
+            qs=np.full(shape, 50.0, dtype=np.float32),
+        )
+
+    def _round_trip_gain(self, qp_value: float) -> np.ndarray:
+        """同一路径上“衰减 → 增益”的频域往返增益（理论应为 exp(2πft/Q)）。"""
+        spec = PropagationSpec(dt=4e-4, nt=800, order=8, npml=12, dtype="float64", boundary="cpml")
+        source = SourceSpec(x=500.0, z=500.0, f0=25.0, delay=0.03)
+        receivers = ReceiverSpec(x=np.array([900.0]), z=np.array([500.0]))
+
+        def run(model: ElasticModel, compensation: bool) -> np.ndarray:
+            prop = ViscoacousticPropagator(
+                model,
+                spec,
+                q_options=QOptions(
+                    enabled=True,
+                    f_ref=25.0,
+                    compensation=compensation,
+                    alpha_c=1.0,
+                    amplitude_cap=1e6,
+                    lowpass_interval=100000,
+                    gain_budget_db=200.0,
+                ),
+            )
+            prop.set_source(source)
+            prop.set_receivers(receivers)
+            wave = source_wavelet(source, spec.dt, spec.nt)
+            trace = np.zeros(spec.nt)
+            for step in range(spec.nt):
+                prop.step(float(wave[step]))
+                trace[step] = prop.sample(("p",))["p"][0]
+            return trace
+
+        attenuated = run(self._homogeneous(qp_value), False)
+        amplified = run(self._homogeneous(qp_value), True)
+        freqs = np.fft.rfftfreq(spec.nt, spec.dt)
+        a_att = np.abs(np.fft.rfft(attenuated))
+        a_amp = np.abs(np.fft.rfft(amplified))
+        return freqs, a_amp / np.maximum(a_att, 1e-30)
+
+    def test_round_trip_gain_matches_theory_and_is_frequency_dependent(self) -> None:
+        q = 25.0
+        freqs, ratio = self._round_trip_gain(q)
+        travel = 400.0 / 3000.0
+        samples = []
+        for frequency in (10.0, 25.0, 40.0):
+            index = int(np.argmin(np.abs(freqs - frequency)))
+            samples.append(float(ratio[index]))
+        theory = [float(np.exp(2.0 * np.pi * f * travel / q)) for f in (10.0, 25.0, 40.0)]
+        for measured, expected in zip(samples, theory):
+            self.assertLess(abs(measured / expected - 1.0), 0.15,
+                            f"往返增益 {measured:.2f} 与理论 {expected:.2f} 偏差过大")
+        # 频率相关：40 Hz 的增益必须显著高于 10 Hz（排除“简单振幅放大”）
+        self.assertGreater(samples[2], 2.0 * samples[0])
+
+    def test_band_limit_and_gain_budget_regularization(self) -> None:
+        model = self._homogeneous(25.0)
+        # 记录长度参与增益预算的计算（T 越长，允许的补偿强度越小）
+        spec = PropagationSpec(dt=4e-4, nt=2000, order=8, npml=12, dtype="float32", boundary="cpml")
+        # f_max=60 Hz：峰值 115 Hz 的机制应被完全剔除
+        band_limited = ViscoacousticPropagator(
+            model,
+            spec,
+            q_options=QOptions(
+                enabled=True, f_ref=30.0, compensation=True,
+                alpha_c=1.0, f_max=60.0, gain_budget_db=40.0,
+            ),
+        )
+        summary = band_limited.quality_summary
+        peaks = summary["f_peak_mechanisms_hz"]
+        alphas = summary["alpha_mechanisms"]
+        self.assertEqual(len(peaks), len(alphas))
+        for peak, alpha in zip(peaks, alphas):
+            if peak > 60.0:
+                self.assertEqual(alpha, 0.0)
+            else:
+                self.assertGreater(alpha, 0.0)
+
+        # 6 dB 预算（2 倍）比 40 dB（100 倍）更严格：所有机制强度都下降
+        tight = ViscoacousticPropagator(
+            model,
+            spec,
+            q_options=QOptions(
+                enabled=True, f_ref=30.0, compensation=True,
+                alpha_c=1.0, f_max=None, gain_budget_db=6.0,
+            ),
+        )
+        tight_alphas = tight.quality_summary["alpha_mechanisms"]
+        self.assertTrue(all(value < 1.0 for value in tight_alphas))
+
+    def test_comparison_metrics_detect_deep_amplitude_recovery(self) -> None:
+        from ertm.qc import comparison_metrics
+
+        grid = GridSpec(nx=41, nz=41, dx=10.0, dz=10.0)
+        shape = grid.shape
+        model = ElasticModel(
+            grid=grid,
+            vp=np.full(shape, 3000.0, dtype=np.float32),
+            vs=np.full(shape, 1700.0, dtype=np.float32),
+            rho=np.full(shape, 2400.0, dtype=np.float32),
+            qp=np.full(shape, 50.0, dtype=np.float32),
+            qs=np.full(shape, 25.0, dtype=np.float32),
+        )
+        baseline = np.zeros(shape, dtype=np.float32)
+        baseline[2:6, :] = 0.2  # 浅部反射
+        baseline[20:30, :] = 1.0  # 深部界面
+        compensated = baseline.copy()
+        compensated[20:30, :] *= 2.0  # 深部振幅翻倍
+        base_image = ImageResult(image=baseline, grid=grid, mode="pp")
+        comp_image = ImageResult(image=compensated, grid=grid, mode="pp")
+        metrics = comparison_metrics(base_image, comp_image, model)
+        self.assertAlmostEqual(metrics["band_amplitude_gain"], 2.0, places=6)
+        self.assertGreater(
+            metrics["compensated_deep_shallow_ratio"],
+            metrics["baseline_deep_shallow_ratio"],
+        )
 
 
 class TestPreprocessing(unittest.TestCase):

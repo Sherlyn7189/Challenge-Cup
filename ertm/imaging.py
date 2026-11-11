@@ -197,6 +197,8 @@ class RTMImager:
             alpha_c=float(self.q_config.alpha_c),
             amplitude_cap=float(self.q_config.amplitude_cap),
             lowpass_interval=int(self.q_config.lowpass_interval),
+            f_max=None if self.q_config.f_max is None else float(self.q_config.f_max),
+            gain_budget_db=float(self.q_config.gain_budget_db),
         )
 
     # ------------------------------------------------------------- public API
@@ -522,10 +524,19 @@ class RTMImager:
                 q_meta.update(forward_summary)
             back_summary = getattr(back, "quality_summary", None) if back is not None else None
             if isinstance(back_summary, dict):
-                # 补偿强度与截断次数取反传侧（真正的 Q 逆过程）
-                q_meta["compensation"] = bool(back_summary.get("compensation", False))
-                q_meta["alpha_c"] = float(back_summary.get("alpha_c", q_meta["alpha_c"]))
+                # 补偿强度、带限、截断与低通统计全部取反传侧（真正的 Q 逆过程）
+                for key in (
+                    "compensation",
+                    "alpha_c",
+                    "alpha_mechanisms",
+                    "f_peak_mechanisms_hz",
+                    "f_max",
+                    "gain_budget_db",
+                ):
+                    if key in back_summary:
+                        q_meta[key] = back_summary[key]
                 q_meta["clipped_steps"] = int(back_summary.get("clipped", 0))
+                q_meta["lowpass_steps"] = int(back_summary.get("lowpass_steps", 0))
         return {
             "placeholder": False,
             "method": "reverse-time migration (two-way wave equation)",

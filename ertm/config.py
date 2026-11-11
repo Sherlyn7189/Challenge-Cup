@@ -378,6 +378,9 @@ class QConfig:
     band_ratio: float = 1.5
     amplitude_cap: float = 50.0
     lowpass_interval: int = 20
+    f_max: float | None = None
+    gain_budget_db: float = 40.0
+    compare: bool = False
 
     def validate(self) -> None:
         if not 0.0 <= self.alpha_c <= 1.0:
@@ -398,6 +401,10 @@ class QConfig:
             raise ConfigError("q.amplitude_cap 必须 ≥ 1")
         if self.lowpass_interval < 1:
             raise ConfigError("q.lowpass_interval 至少为 1")
+        if self.f_max is not None and self.f_max <= 0:
+            raise ConfigError("q.f_max 必须为正或 null")
+        if not 0.0 < self.gain_budget_db <= 200.0:
+            raise ConfigError("q.gain_budget_db 必须在 (0, 200] 内")
 
 
 @dataclass(frozen=True)

@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import platform
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from . import qc
 from .config import PROJECT_ROOT, AppConfig, save_config
 from .data import NumpyDataStore
 from .evaluation import build_evaluator
@@ -270,6 +271,10 @@ class ERTMPipeline:
             normalize=bool(config.imaging.stack_normalize),
         )
 
+        # 5.5) Q 补偿对比：同一观测、同一成像参数，只改反传是否补偿
+        if self._should_compare_q():
+            artifacts.extend(self._run_q_comparison(shots, model, image))
+
         if config.output.save_data:
             artifacts.append(self.data_store.save_image(image, f"image_{image.mode}"))
         if config.output.save_figures:
@@ -314,6 +319,7 @@ class ERTMPipeline:
             "shot_meta": shots[0].meta,
             "image_meta": image.meta,
             "metrics": metrics.to_dict(),
+            "q_comparison": getattr(self, "_q_comparison", None),
             "artifacts": [str(path) for path in artifacts],
         }
         report_path = self.data_store.save_json(report, "run_report")
@@ -383,6 +389,62 @@ class ERTMPipeline:
             processed.meta = {**processed.meta, "q_attenuated": True}
         processed.meta = {**processed.meta, "shot_index": index}
         return processed
+
+    def _should_compare_q(self) -> bool:
+        config = self.config
+        return bool(
+            config.q.enabled
+            and config.q.compare
+            and config.solver.engine == "viscoacoustic"
+        )
+
+    def _run_q_comparison(
+        self,
+        shots: list[ShotRecord],
+        model: ElasticModel,
+        compensated: ImageResult,
+    ) -> list[Path]:
+        """用同一批记录、同一成像参数跑一遍“不补偿”的 RTM，输出对比与 Q 模型。"""
+        config = self.config
+        baseline_q = replace(config.q, enabled=False, compare=False)
+        baseline_imager = build_imager(config.imaging, config.solver, baseline_q)
+        baseline_images: list[ImageResult] = []
+        for shot in shots:
+            baseline_images.append(baseline_imager.migrate(shot, model))
+        baseline = stack_images(
+            baseline_images, normalize=bool(config.imaging.stack_normalize)
+        )
+        metrics = qc.comparison_metrics(baseline, compensated, model)
+        self._q_comparison = metrics
+        logger.info(
+            "Q 补偿对比: 深部窗口增益 %.2fx（%.0f–%.0f m）",
+            metrics["band_amplitude_gain"],
+            metrics["band_top_m"],
+            metrics["band_bottom_m"],
+        )
+        artifacts: list[Path] = []
+        png, json_path = qc.save_comparison(
+            baseline,
+            compensated,
+            model,
+            self.data_store.dirs["images"],
+        )
+        artifacts.extend([png, json_path])
+        q_npz, q_png = qc.save_q_model(
+            model,
+            self.data_store.dirs["models"],
+        )
+        artifacts.extend([q_npz, q_png])
+        meta = compensated.meta.get("q", {})
+        gain_curve = qc.save_gain_curve(
+            meta,
+            self.data_store.dirs["images"],
+            dt=float(compensated.meta.get("dt", config.solver.dt)),
+            nt=int(compensated.meta.get("nt", config.solver.nt)),
+        )
+        if gain_curve is not None:
+            artifacts.append(gain_curve)
+        return artifacts
 
     def _build_compensator(self, model: ElasticModel) -> QCompensator | None:
         config = self.config
