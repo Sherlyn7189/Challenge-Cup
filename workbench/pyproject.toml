@@ -30,4 +30,7 @@ files = [
     "untitled/views/RealDataView.qml",
     "untitled/views/QCompView.qml",
     "untitled/views/SourceView.qml",
+    "assets/compare/cave_model.png",
+    "assets/compare/ertm_vx.png",
+    "assets/compare/kirchhoff.png",
 ]

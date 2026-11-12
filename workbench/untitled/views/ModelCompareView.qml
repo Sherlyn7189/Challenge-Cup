@@ -2,24 +2,28 @@ import QtQuick
 import "../components"
 import "../theme/Theme.js" as Theme
 
-/* 典型模型成像对比：溶洞 / 倾斜裂缝 / 交叉裂缝 */
+/* 典型模型成像对比：溶洞原始图件 + ERTM 多分量 + Kirchhoff 参考 */
 Item {
     id: view
 
     readonly property var comparisons: bridge ? bridge.comparisons : []
     property int selectedIndex: 0
     readonly property var current: comparisons.length > 0 ? comparisons[selectedIndex] : ({})
+    readonly property bool caveActive: current.id === "cave"
     readonly property string modelSource: bridge && current.modelKey
         ? (bridge.previews[current.modelKey] || "") : ""
+
+    readonly property url caveModelAsset: Qt.resolvedUrl("../../assets/compare/cave_model.png")
+    readonly property url ertmAsset: Qt.resolvedUrl("../../assets/compare/ertm_vx.png")
+    readonly property url kirchhoffAsset: Qt.resolvedUrl("../../assets/compare/kirchhoff.png")
 
     function modelInfo() {
         var id = current.id || "";
         if (id === "cave")
             return [
-                { "label": "异常体", "value": "椭圆溶洞" },
-                { "label": "中心 / 尺寸", "value": "500, 350 m · 40×30 m", "color": "#8fe3ff" },
-                { "label": "Vp / Qp", "value": "1800 m/s · 40", "color": "#8fe3ff" },
-                { "label": "模型来源", "value": "config/default.json" }
+                { "label": "异常体", "value": "溶洞" },
+                { "label": "模型尺度", "value": "20 × 50 m", "color": "#8fe3ff" },
+                { "label": "图件来源", "value": "图19(b)" }
             ];
         if (id === "fracture")
             return [
@@ -66,7 +70,9 @@ Item {
 
                     Image {
                         anchors.fill: parent
-                        source: bridge ? (bridge.previews[modelData.modelKey] || "") : ""
+                        source: modelData.id === "cave"
+                                ? view.caveModelAsset
+                                : (bridge ? (bridge.previews[modelData.modelKey] || "") : "")
                         fillMode: Image.PreserveAspectCrop
                         smooth: true
                         cache: false
@@ -96,7 +102,7 @@ Item {
                 Text {
                     x: 66
                     y: 48
-                    text: modelData.status
+                    text: modelData.id === "cave" ? "图件已接入" : modelData.status
                     color: modelData.id === "cave" ? "#31d98a" : "#efa63f"
                     font.family: Theme.fontUi
                     font.pixelSize: 7
@@ -125,8 +131,8 @@ Item {
         CardHeader {
             width: parent.width
             title: "成像剖面对比"
-            tag: "典型模型 · 3 类"
-            tagColor: "#7fc4df"
+            tag: view.caveActive ? "溶洞 · 原始图件" : "典型模型 · 3 类"
+            tagColor: view.caveActive ? "#31d98a" : "#7fc4df"
         }
 
         ComparePane {
@@ -135,13 +141,14 @@ Item {
             width: (compareCard.width - 16 - 20) / 3
             height: 368
             title: "地质模型 · Vp"
-            tag: "模型"
+            tag: view.caveActive ? "图19(b)" : "模型"
             tagColor: "#31d98a"
-            source: view.modelSource
+            source: view.caveActive ? view.caveModelAsset : view.modelSource
             placeholderText: "模型预览"
-            placeholderNote: "output/models/model.npz"
+            placeholderNote: view.caveActive ? "assets/compare/cave_model.png" : "output/models/model.npz"
+            imageHeight: view.caveActive ? 230 : 190
             info: view.modelInfo()
-            footer: view.current.note || ""
+            footer: view.caveActive ? "图19(b) 溶洞模型 · 仅重配色，数据未改" : (view.current.note || "")
         }
 
         ComparePane {
@@ -149,18 +156,26 @@ Item {
             y: 46
             width: (compareCard.width - 16 - 20) / 3
             height: 368
-            title: "ERTM 成像 · PP"
-            tag: "占位"
-            tagColor: "#efa63f"
+            title: "ERTM 成像 · 多分量"
+            tag: view.caveActive ? "vx 分量" : "占位"
+            tagColor: view.caveActive ? "#31d98a" : "#efa63f"
+            source: view.caveActive ? view.ertmAsset : ""
             placeholderText: "ERTM 成像待接入"
             placeholderNote: "ertm/imaging.py"
-            info: [
+            imageHeight: view.caveActive ? 230 : 190
+            info: view.caveActive ? [
+                { "label": "求解", "value": "解耦一阶速度—应力" },
+                { "label": "成像", "value": "PP · 多分量" },
+                { "label": "显示", "value": "vx（图21(a)）", "color": "#8fe3ff" }
+            ] : [
                 { "label": "成像条件", "value": "PP · 零延迟互相关" },
                 { "label": "归一化", "value": "源照明归一化" },
                 { "label": "后处理", "value": "Laplacian" },
                 { "label": "成像状态", "value": "零场占位", "color": "#efa63f" }
             ]
-            footer: "等待算法分工同学接入"
+            footer: view.caveActive
+                    ? "多分量 vx / vs / vz / vxz · 当前显示 vx"
+                    : "等待算法分工同学接入"
         }
 
         ComparePane {
@@ -169,17 +184,25 @@ Item {
             width: (compareCard.width - 16 - 20) / 3
             height: 368
             title: "参考偏移 · 深度域"
-            tag: "待接入"
-            tagColor: "#3c6b83"
+            tag: view.caveActive ? "Kirchhoff" : "待接入"
+            tagColor: view.caveActive ? "#31d98a" : "#3c6b83"
+            source: view.caveActive ? view.kirchhoffAsset : ""
             placeholderText: "参考剖面待接入"
             placeholderNote: "Kirchhoff / Gaussian Beam"
-            info: [
+            imageHeight: view.caveActive ? 230 : 190
+            info: view.caveActive ? [
+                { "label": "方法", "value": "Kirchhoff" },
+                { "label": "域", "value": "深度域" },
+                { "label": "图件来源", "value": "图1(c)", "color": "#8fe3ff" }
+            ] : [
                 { "label": "参考方法", "value": "Kirchhoff" },
                 { "label": "备选方法", "value": "高斯束偏移" },
                 { "label": "用途", "value": "归位 / 极性对比" },
                 { "label": "参考状态", "value": "未生成", "color": "#6f93aa" }
             ]
-            footer: "用于与 ERTM 剖面互相关对比"
+            footer: view.caveActive
+                    ? "与 ERTM 剖面做归位 / 极性对比"
+                    : "用于与 ERTM 剖面互相关对比"
         }
     }
 
@@ -189,30 +212,30 @@ Item {
         y: 516
         width: 180
         height: 100
-        label: "成像归位误差"
-        value: "—"
-        note: "目标 < 1 个网格"
-        state: "muted"
+        label: "地质模型"
+        value: view.caveActive ? "溶洞" : "示意图"
+        note: view.caveActive ? "图19(b) · 20 × 50 m" : "UI 预设"
+        state: "ok"
     }
     MetricTile {
         x: 190
         y: 516
         width: 180
         height: 100
-        label: "异常体识别"
-        value: "—"
-        note: view.current.name ? view.current.name : "三类典型体"
-        state: "muted"
+        label: "ERTM 成像"
+        value: view.caveActive ? "vx" : "—"
+        note: view.caveActive ? "多分量 · 图21(a)" : "等待接入"
+        state: view.caveActive ? "ok" : "muted"
     }
     MetricTile {
         x: 380
         y: 516
         width: 180
         height: 100
-        label: "RTM / 参考一致性"
-        value: "—"
-        note: "相关系数 / RMSE"
-        state: "muted"
+        label: "参考偏移"
+        value: view.caveActive ? "Kirchhoff" : "—"
+        note: view.caveActive ? "深度域 · 图1(c)" : "参考剖面"
+        state: view.caveActive ? "ok" : "muted"
     }
 
     Rectangle {
@@ -228,7 +251,7 @@ Item {
         Text {
             x: 10
             y: 8
-            text: "当前状态"
+            text: "图件说明"
             color: "#6f93aa"
             font.family: Theme.fontUi
             font.pixelSize: 8
@@ -237,7 +260,9 @@ Item {
             x: 10
             y: 24
             width: parent.width - 20
-            text: "模型预览来自项目真实配置；成像与参考剖面为占位，算法接入后自动更新。"
+            text: view.caveActive
+                  ? "三张原始图件已按深色界面重绘：仅改变配色，未改变模型与成像数据。"
+                  : "当前模型为界面预设示意；溶洞模型已接入原始图件。"
             wrapMode: Text.WordWrap
             color: "#5f8199"
             font.family: Theme.fontUi

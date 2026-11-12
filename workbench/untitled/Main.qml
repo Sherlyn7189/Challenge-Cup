@@ -29,10 +29,10 @@ Window {
         {
             "eyebrow": "SECTION 02 · IMAGING",
             "title": "典型模型对比",
-            "desc": "对比溶洞、倾斜裂缝、交叉裂缝三类典型模型的成像剖面，检查异常体归位与横向分辨率。",
+            "desc": "溶洞模型已接入原始 Vp 图件、ERTM 多分量成像与 Kirchhoff 深度域参考图；裂缝类仍为界面预设。",
             "formula": "I(x,z) = Σs ∫ Ws(x,z,t) · Wr(x,z,t) dt",
-            "tag": "待接入",
-            "tagColor": "#efa63f"
+            "tag": "已接入",
+            "tagColor": "#31d98a"
         },
         {
             "eyebrow": "SECTION 03 · REAL DATA",

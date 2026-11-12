@@ -162,7 +162,7 @@ Item {
             step: 2
             title: "典型模型对比"
             subtitle: "cave · fracture · cross"
-            state: "warn"
+            state: "ready"
             selected: sidebar.selectedIndex === 1
             onClicked: sidebar.select(1)
         }
