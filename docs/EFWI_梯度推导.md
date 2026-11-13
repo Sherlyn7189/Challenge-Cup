@@ -1,18 +1,12 @@
-# EFWI 伴随源构造与梯度计算
+﻿# EFWI 浼撮殢婧愭瀯閫犱笌姊害璁＄畻
 
-本文档对应代码：
+鏈枃妗ｅ搴斾唬鐮侊細
 
-* `efwi/fd/kernels.py`：正演、伴随、梯度累积核；
-* `efwi/fd/operator.py`：`Elastic2DOperator` 正演/单炮梯度/多炮累积；
-* `efwi/adjoint.py`：残差、目标函数、伴随源、梯度累积与有限差分检验 API；
-* `efwi/gradient.py`：刚度梯度到 vp/vs/rho/各向异性参数的链式转换。
-
+* `efwi/fd/kernels.py`锛氭婕斻€佷即闅忋€佹搴︾疮绉牳锛?* `efwi/fd/operator.py`锛歚Elastic2DOperator` 姝ｆ紨/鍗曠偖姊害/澶氱偖绱Н锛?* `efwi/adjoint.py`锛氭畫宸€佺洰鏍囧嚱鏁般€佷即闅忔簮銆佹搴︾疮绉笌鏈夐檺宸垎妫€楠?API锛?* `efwi/gradient.py`锛氬垰搴︽搴﹀埌 vp/vs/rho/鍚勫悜寮傛€у弬鏁扮殑閾惧紡杞崲銆?
 ---
 
-## 1. 离散正演与符号
-
-二维 P-SV 速度—应力方程（与正演代码完全一致）：
-
+## 1. 绂绘暎姝ｆ紨涓庣鍙?
+浜岀淮 P-SV 閫熷害鈥斿簲鍔涙柟绋嬶紙涓庢婕斾唬鐮佸畬鍏ㄤ竴鑷达級锛?
 $$
 \begin{aligned}
 \rho \dot v_x &= \partial_x \sigma_{xx}+\partial_z \sigma_{xz},\\
@@ -23,7 +17,7 @@ $$
 \end{aligned}
 $$
 
-记 $v=(v_x,v_z)$、$s=(\sigma_{xx},\sigma_{zz},\sigma_{xz})$，交错网格离散后一步为
+璁?$v=(v_x,v_z)$銆?s=(\sigma_{xx},\sigma_{zz},\sigma_{xz})$锛屼氦閿欑綉鏍肩鏁ｅ悗涓€姝ヤ负
 
 $$
 \boxed{
@@ -32,23 +26,17 @@ s^{n+1}=s^n+\Delta t\,C E v^{n+1/2}
 }
 $$
 
-其中：
-
-* $D$：应力散度算子（中心/角点 → 速度点）；
-* $E$：应变率算子（速度点 → 中心/角点）；
-* $M=\operatorname{diag}(\rho_x,\rho_z)$：密度质量矩阵；
-* $C$：刚度矩阵（各向同性或 VTI/HTI）；
-* $f^n$：震源项，爆炸源注入 $s$，力源注入 $v$。
-
-数据 $d^n=P v^{n+1/2}$，$P$ 为检波点双线性采样算子。记录后乘吸收层阻尼
-$G=\operatorname{diag}(e^{-d\Delta t})$。
-
+鍏朵腑锛?
+* $D$锛氬簲鍔涙暎搴︾畻瀛愶紙涓績/瑙掔偣 鈫?閫熷害鐐癸級锛?* $E$锛氬簲鍙樼巼绠楀瓙锛堥€熷害鐐?鈫?涓績/瑙掔偣锛夛紱
+* $M=\operatorname{diag}(\rho_x,\rho_z)$锛氬瘑搴﹁川閲忕煩闃碉紱
+* $C$锛氬垰搴︾煩闃碉紙鍚勫悜鍚屾€ф垨 VTI/HTI锛夛紱
+* $f^n$锛氶渿婧愰」锛岀垎鐐告簮娉ㄥ叆 $s$锛屽姏婧愭敞鍏?$v$銆?
+鏁版嵁 $d^n=P v^{n+1/2}$锛?P$ 涓烘娉㈢偣鍙岀嚎鎬ч噰鏍风畻瀛愩€傝褰曞悗涔樺惛鏀跺眰闃诲凹
+$G=\operatorname{diag}(e^{-d\Delta t})$銆?
 ---
 
-## 2. 残差与目标函数
-
-合成数据 $d^{syn}$、观测数据 $d^{obs}$：
-
+## 2. 娈嬪樊涓庣洰鏍囧嚱鏁?
+鍚堟垚鏁版嵁 $d^{syn}$銆佽娴嬫暟鎹?$d^{obs}$锛?
 $$
 r=d^{syn}-d^{obs},\qquad
 E_{obs}=\sum_{s}\|d_s^{obs}\|^2,
@@ -61,8 +49,7 @@ J=\frac{1}{2}\frac{\|r\|^2}{E_{obs}}
 }
 $$
 
-代码：
-
+浠ｇ爜锛?
 ```python
 from efwi.adjoint import data_residual, objective
 
@@ -70,37 +57,27 @@ res = data_residual(synthetic, observed)   # r = syn - obs, energy = ||obs||^2
 J = objective(res)                         # 0.5 * ||r||^2 / energy
 ```
 
-`ShotGradient` 保存每炮的**未归一化** $0.5\|r_s\|^2$，最后统一除以全局
-$E_{obs}$，避免逐炮归一化改变炮间权重。
-
+`ShotGradient` 淇濆瓨姣忕偖鐨?*鏈綊涓€鍖?* $0.5\|r_s\|^2$锛屾渶鍚庣粺涓€闄や互鍏ㄥ眬
+$E_{obs}$锛岄伩鍏嶉€愮偖褰掍竴鍖栨敼鍙樼偖闂存潈閲嶃€?
 ---
 
-## 3. 伴随源
-
-对 $J=\frac{1}{2E_{obs}}\|Pv-d\|^2$ 有
-
+## 3. 浼撮殢婧?
+瀵?$J=\frac{1}{2E_{obs}}\|Pv-d\|^2$ 鏈?
 $$
 \boxed{\frac{\partial J}{\partial v^{n+1/2}}=\frac{1}{E_{obs}}P^T r^n}
 $$
 
-数据空间伴随源就是 $P^T r^n$。代码中：
-
-1. `adjoint_source(residual, gain=...)` 返回数据空间的 $r$（可选增益）；
-2. `kernels.inject_adjoint_source(...)` 用与正演 `record_data` **完全相同**的
-   双线性权重，把 $r$ 散加到伴随速度场。因此 $P^T$ 是 $P$ 的严格转置；
-3. 若目标函数已在 `compute_gradient` 中按 $E_{obs}$ 归一化，伴随源本身
-   不必再乘 $1/E_{obs}$，最终梯度统一除 $E_{obs}$ 即可。
-
-实现位置：`Elastic2DOperator._shot_gradient`。
-
+鏁版嵁绌洪棿浼撮殢婧愬氨鏄?$P^T r^n$銆備唬鐮佷腑锛?
+1. `adjoint_source(residual, gain=...)` 杩斿洖鏁版嵁绌洪棿鐨?$r$锛堝彲閫夊鐩婏級锛?2. `kernels.inject_adjoint_source(...)` 鐢ㄤ笌姝ｆ紨 `record_data` **瀹屽叏鐩稿悓**鐨?   鍙岀嚎鎬ф潈閲嶏紝鎶?$r$ 鏁ｅ姞鍒颁即闅忛€熷害鍦恒€傚洜姝?$P^T$ 鏄?$P$ 鐨勪弗鏍艰浆缃紱
+3. 鑻ョ洰鏍囧嚱鏁板凡鍦?`compute_gradient` 涓寜 $E_{obs}$ 褰掍竴鍖栵紝浼撮殢婧愭湰韬?   涓嶅繀鍐嶄箻 $1/E_{obs}$锛屾渶缁堟搴︾粺涓€闄?$E_{obs}$ 鍗冲彲銆?
+瀹炵幇浣嶇疆锛歚Elastic2DOperator._shot_gradient`銆?
 ---
 
-## 4. 伴随波场
+## 4. 浼撮殢娉㈠満
 
-### 4.1 反向递推
+### 4.1 鍙嶅悜閫掓帹
 
-将正演两步的转置按**逆序**作用，得到实现采用的离散伴随：
-
+灏嗘婕斾袱姝ョ殑杞疆鎸?*閫嗗簭**浣滅敤锛屽緱鍒板疄鐜伴噰鐢ㄧ殑绂绘暎浼撮殢锛?
 $$
 \boxed{
 \tilde v^{n-1/2}=\tilde v^{n+1/2}+\Delta t\,E^T C^T\tilde s^{n+1},
@@ -109,32 +86,25 @@ $$
 }
 $$
 
-注意：
-
-1. 先注入残差：
-   $\tilde v^{n+1/2}\leftarrow\tilde v^{n+1/2}+P^T r^n$；
-2. $\tilde s^n$ 必须用**刚更新完的** $\tilde v^{n-1/2}$，而不是旧的
-   $\tilde v^{n+1/2}$；这对应完整 Jacobian 中的
-   $\Delta t^2 C E M^{-1}D$ 耦合项；
-3. 正向每步末尾乘 $G$，反向在每步推进前先乘 $G$（$G^T=G$）。
-
-代码 `kernels.adjoint_step` 用双缓冲实现：第一遍算新速度伴随，第二遍算新
-应力伴随，最后清零边界。`tests/test_adjoint.py` 直接用随机场验证
+娉ㄦ剰锛?
+1. 鍏堟敞鍏ユ畫宸細
+   $\tilde v^{n+1/2}\leftarrow\tilde v^{n+1/2}+P^T r^n$锛?2. $\tilde s^n$ 蹇呴』鐢?*鍒氭洿鏂板畬鐨?* $\tilde v^{n-1/2}$锛岃€屼笉鏄棫鐨?   $\tilde v^{n+1/2}$锛涜繖瀵瑰簲瀹屾暣 Jacobian 涓殑
+   $\Delta t^2 C E M^{-1}D$ 鑰﹀悎椤癸紱
+3. 姝ｅ悜姣忔鏈熬涔?$G$锛屽弽鍚戝湪姣忔鎺ㄨ繘鍓嶅厛涔?$G$锛?G^T=G$锛夈€?
+浠ｇ爜 `kernels.adjoint_step` 鐢ㄥ弻缂撳啿瀹炵幇锛氱涓€閬嶇畻鏂伴€熷害浼撮殢锛岀浜岄亶绠楁柊
+搴斿姏浼撮殢锛屾渶鍚庢竻闆惰竟鐣屻€俙tests/test_adjoint.py` 鐩存帴鐢ㄩ殢鏈哄満楠岃瘉
 
 $$
 \langle F x,y\rangle=\langle x,F^T y\rangle .
 $$
 
-### 4.2 完全匹配层/海绵层
-
-阻尼是对角算子，转置仍为乘 $G$。由于正演在记录之后阻尼，反向必须先
-“解阻尼”（仍乘 $G$）再注入残差/累加梯度，否则伴随方程与离散正演不一致。
-
+### 4.2 瀹屽叏鍖归厤灞?娴风坏灞?
+闃诲凹鏄瑙掔畻瀛愶紝杞疆浠嶄负涔?$G$銆傜敱浜庢婕斿湪璁板綍涔嬪悗闃诲凹锛屽弽鍚戝繀椤诲厛
+鈥滆В闃诲凹鈥濓紙浠嶄箻 $G$锛夊啀娉ㄥ叆娈嬪樊/绱姞姊害锛屽惁鍒欎即闅忔柟绋嬩笌绂绘暎姝ｆ紨涓嶄竴鑷淬€?
 ---
 
-## 5. 梯度表达式
-
-### 5.1 刚度梯度
+## 5. 姊害琛ㄨ揪寮?
+### 5.1 鍒氬害姊害
 
 $$
 \boxed{
@@ -147,21 +117,18 @@ g_{C44}&=\sum_n \Delta t\,\tilde\sigma_{xz}^{n+1}\,\dot\varepsilon_{xz}^{n}.
 \end{aligned}}
 $$
 
-这里 $\tilde s^{n+1}$ 是**本步对应的伴随应力**（代码中在 `adjoint_step` 之前的
-`saxx/sazz/saxz`），$\dot\varepsilon^n$ 是正演保存的应变率。$C_{44}$ 位于
-角点，反传时按正演的 $1/4$ 平均分配到四个中心。
+杩欓噷 $\tilde s^{n+1}$ 鏄?*鏈瀵瑰簲鐨勪即闅忓簲鍔?*锛堜唬鐮佷腑鍦?`adjoint_step` 涔嬪墠鐨?`saxx/sazz/saxz`锛夛紝$\dot\varepsilon^n$ 鏄婕斾繚瀛樼殑搴斿彉鐜囥€?C_{44}$ 浣嶄簬
+瑙掔偣锛屽弽浼犳椂鎸夋婕旂殑 $1/4$ 骞冲潎鍒嗛厤鍒板洓涓腑蹇冦€?
+### 5.2 瀵嗗害姊害
 
-### 5.2 密度梯度
-
-密度只出现在动量方程的质量项：
-
+瀵嗗害鍙嚭鐜板湪鍔ㄩ噺鏂圭▼鐨勮川閲忛」锛?
 $$
 \frac{\partial v^{n+1/2}}{\partial \rho}
 =-\Delta t\,\frac{Ds^n+f^n}{\rho^2}
 =-\Delta t\,\frac{a^{n+1/2}}{\rho}.
 $$
 
-因此
+鍥犳
 
 $$
 \boxed{
@@ -170,25 +137,20 @@ g_\rho^{dir}=-\sum_n \Delta t\,\tilde v^{n-1/2}\cdot
 }
 $$
 
-**关键细节：使用 $\tilde v^{n-1/2}$（本步推进后的速度伴随），而不是
-$\tilde v^{n+1/2}$。** 它是速度更新方程的 Lagrange 乘子。若误用推进前的
-$\tilde v^{n+1/2}$，短记录时误差很小，但随记录长度累积，测试中 nt=30 时
-密度方向导数会偏大约 6%；修正后误差降到 $10^{-7}$ 量级（见第 8 节）。
-
-代码：
-
+**鍏抽敭缁嗚妭锛氫娇鐢?$\tilde v^{n-1/2}$锛堟湰姝ユ帹杩涘悗鐨勯€熷害浼撮殢锛夛紝鑰屼笉鏄?$\tilde v^{n+1/2}$銆?* 瀹冩槸閫熷害鏇存柊鏂圭▼鐨?Lagrange 涔樺瓙銆傝嫢璇敤鎺ㄨ繘鍓嶇殑
+$\tilde v^{n+1/2}$锛岀煭璁板綍鏃惰宸緢灏忥紝浣嗛殢璁板綍闀垮害绱Н锛屾祴璇曚腑 nt=30 鏃?瀵嗗害鏂瑰悜瀵兼暟浼氬亸澶х害 6%锛涗慨姝ｅ悗璇樊闄嶅埌 $10^{-7}$ 閲忕骇锛堣绗?8 鑺傦級銆?
+浠ｇ爜锛?
 ```python
-kernels.adjoint_stiffness_gradient(...)   # 在 adjoint_step 之前
+kernels.adjoint_stiffness_gradient(...)   # 鍦?adjoint_step 涔嬪墠
 kernels.adjoint_step(...)                 # -> vax2, vaz2 (v~^{n-1/2})
 kernels.adjoint_density_gradient(vax2, vaz2, ax, az, rho_x, rho_z, ...)
 ```
 
-`rho_x/rho_z` 是正演时的算术平均；反传时各分 $1/2$，边界重复节点按
-`np.pad(mode="edge")` 的等价关系折叠回物理边界。
+`rho_x/rho_z` 鏄婕旀椂鐨勭畻鏈钩鍧囷紱鍙嶄紶鏃跺悇鍒?$1/2$锛岃竟鐣岄噸澶嶈妭鐐规寜
+`np.pad(mode="edge")` 鐨勭瓑浠峰叧绯绘姌鍙犲洖鐗╃悊杈圭晫銆?
+### 5.3 閾惧紡杞崲鍒?vp/vs/rho
 
-### 5.3 链式转换到 vp/vs/rho
-
-各向同性：
+鍚勫悜鍚屾€э細
 
 $$
 \begin{aligned}
@@ -201,9 +163,7 @@ g_\rho&=g_\rho^{dir}
 \end{aligned}
 $$
 
-VTI/HTI 的 $C_{ij}(v_p,v_s,\rho,\epsilon,\delta)$ 偏导见
-`efwi/gradient.py::_stiffness_derivatives`；若 `invert_anisotropy=True`，
-额外给出
+VTI/HTI 鐨?$C_{ij}(v_p,v_s,\rho,\epsilon,\delta)$ 鍋忓瑙?`efwi/gradient.py::_stiffness_derivatives`锛涜嫢 `invert_anisotropy=True`锛?棰濆缁欏嚭
 
 $$
 g_\epsilon = 2\rho v_p^2\,g_{C11}\ \text{(VTI)},\qquad
@@ -212,10 +172,8 @@ $$
 
 ---
 
-## 6. 多炮累积与归一化
-
-对每炮独立计算原始梯度 $g_p^{(s)}$，然后
-
+## 6. 澶氱偖绱Н涓庡綊涓€鍖?
+瀵规瘡鐐嫭绔嬭绠楀師濮嬫搴?$g_p^{(s)}$锛岀劧鍚?
 $$
 \boxed{
 g_p=\frac{1}{E_{obs}}\sum_{s=1}^{N_s}g_p^{(s)},\qquad
@@ -223,11 +181,9 @@ J=\frac{1}{E_{obs}}\sum_{s=1}^{N_s}\frac12\|r_s\|^2
 }
 $$
 
-伪 Hessian 也按炮求和（不做能量归一化，用于相对照明补偿）。`AdjointResult.g`
-已按 $E_{obs}$ 归一化，`AdjointResult.h` 保留原始照明量纲。
-
-代码接口：
-
+浼?Hessian 涔熸寜鐐眰鍜岋紙涓嶅仛鑳介噺褰掍竴鍖栵紝鐢ㄤ簬鐩稿鐓ф槑琛ュ伩锛夈€俙AdjointResult.g`
+宸叉寜 $E_{obs}$ 褰掍竴鍖栵紝`AdjointResult.h` 淇濈暀鍘熷鐓ф槑閲忕翰銆?
+浠ｇ爜鎺ュ彛锛?
 ```python
 from efwi.adjoint import ShotGradientAccumulator, compute_adjoint_gradients
 
@@ -238,49 +194,33 @@ for s in range(ns):
 result2 = acc.finalize()
 ```
 
-`result.shots` 保存逐炮的原始梯度、misfit、合成/残差，可直接检查哪一炮
-贡献异常。
-
+`result.shots` 淇濆瓨閫愮偖鐨勫師濮嬫搴︺€乵isfit銆佸悎鎴?娈嬪樊锛屽彲鐩存帴妫€鏌ュ摢涓€鐐?璐＄尞寮傚父銆?
 ---
 
-## 7. 离散一致性要点
-
-1. **转置严格**：`adjoint_step` 是 $F^T$，不是连续方程的近似离散；用
-   `tests/test_adjoint.py` 的内积恒等式验证。
-2. **时间顺序**：残差注入、刚度梯度、速度伴随推进、密度梯度、应力伴随
-   推进的顺序不能交换；密度必须用推进后的速度伴随。
-3. **阻尼**：正演末尾乘 $G$，反向开始乘 $G$。
-4. **平均算子**：$C_{44}$ 角点平均、$\rho_x/\rho_z$ 算术平均的反向分配
-   与正演一致；`np.pad(mode="edge")` 产生的重复节点在边界折叠。
-5. **存储抽稀**：内存不足时 `ForwardStorage.stride>1`，梯度用最近存储时刻
-   的场近似；`stride=1` 时是严格离散梯度。测试均用 `stride=1`。
-
+## 7. 绂绘暎涓€鑷存€ц鐐?
+1. **杞疆涓ユ牸**锛歚adjoint_step` 鏄?$F^T$锛屼笉鏄繛缁柟绋嬬殑杩戜技绂绘暎锛涚敤
+   `tests/test_adjoint.py` 鐨勫唴绉亽绛夊紡楠岃瘉銆?2. **鏃堕棿椤哄簭**锛氭畫宸敞鍏ャ€佸垰搴︽搴︺€侀€熷害浼撮殢鎺ㄨ繘銆佸瘑搴︽搴︺€佸簲鍔涗即闅?   鎺ㄨ繘鐨勯『搴忎笉鑳戒氦鎹紱瀵嗗害蹇呴』鐢ㄦ帹杩涘悗鐨勯€熷害浼撮殢銆?3. **闃诲凹**锛氭婕旀湯灏句箻 $G$锛屽弽鍚戝紑濮嬩箻 $G$銆?4. **骞冲潎绠楀瓙**锛?C_{44}$ 瑙掔偣骞冲潎銆?\rho_x/\rho_z$ 绠楁湳骞冲潎鐨勫弽鍚戝垎閰?   涓庢婕斾竴鑷达紱`np.pad(mode="edge")` 浜х敓鐨勯噸澶嶈妭鐐瑰湪杈圭晫鎶樺彔銆?5. **瀛樺偍鎶界█**锛氬唴瀛樹笉瓒虫椂 `ForwardStorage.stride>1`锛屾搴︾敤鏈€杩戝瓨鍌ㄦ椂鍒?   鐨勫満杩戜技锛沗stride=1` 鏃舵槸涓ユ牸绂绘暎姊害銆傛祴璇曞潎鐢?`stride=1`銆?
 ---
 
-## 8. 有限差分方向导数检验
+## 8. 鏈夐檺宸垎鏂瑰悜瀵兼暟妫€楠?
+### 8.1 鏂规硶
 
-### 8.1 方法
-
-选方向 $d$，中心差分
-
+閫夋柟鍚?$d$锛屼腑蹇冨樊鍒?
 $$
 D_{FD}=\frac{J(m+\epsilon d)-J(m-\epsilon d)}{2\epsilon},
 $$
 
-与伴随方向导数
-
+涓庝即闅忔柟鍚戝鏁?
 $$
 D_{ADJ}=\sum_p g_p\,d_p
 $$
 
-比较相对误差。检验脚本：`scripts/check_gradient.py`；单元测试：
-`tests/test_gradient.py::test_directional_derivative_matches_fd`。
+姣旇緝鐩稿璇樊銆傛楠岃剼鏈細`scripts/check_gradient.py`锛涘崟鍏冩祴璇曪細
+`tests/test_gradient.py::test_directional_derivative_matches_fd`銆?
+### 8.2 褰撳墠娴嬭瘯缁撴灉
 
-### 8.2 当前测试结果
-
-**单元测试**（36×30、2 炮、160 步）：
-
-| 方向 | 参数 | 伴随 | 有限差分 | 相对误差 |
+**鍗曞厓娴嬭瘯**锛?6脳30銆? 鐐€?60 姝ワ級锛?
+| 鏂瑰悜 | 鍙傛暟 | 浼撮殢 | 鏈夐檺宸垎 | 鐩稿璇樊 |
 |---|---|---:|---:|---:|
 | gaussian | vp | -5.312574e-09 | -5.312430e-09 | 2.72e-05 |
 | gaussian | vs | -9.141950e-09 | -9.141787e-09 | 1.79e-05 |
@@ -289,9 +229,9 @@ $$
 | random_smooth | vs | -1.820402e-09 | -1.820393e-09 | 4.93e-06 |
 | random_smooth | rho | -7.983630e-10 | -7.983629e-10 | 8.51e-08 |
 
-**演示脚本**（81×61、2 炮、658 步，`scripts/check_gradient.py`）：
+**婕旂ず鑴氭湰**锛?1脳61銆? 鐐€?58 姝ワ紝`scripts/check_gradient.py`锛夛細
 
-| 方向 | 参数 | 伴随 | 有限差分 | 相对误差 |
+| 鏂瑰悜 | 鍙傛暟 | 浼撮殢 | 鏈夐檺宸垎 | 鐩稿璇樊 |
 |---|---|---:|---:|---:|
 | gaussian | vp | 4.642620e-04 | 4.642592e-04 | 5.84e-06 |
 | gaussian | vs | 2.175769e-05 | 2.175763e-05 | 2.68e-06 |
@@ -300,75 +240,67 @@ $$
 | random_smooth | vs | -2.123332e-05 | -2.123332e-05 | 8.11e-09 |
 | random_smooth | rho | -1.861060e-06 | -1.861062e-06 | 9.32e-07 |
 
-rho 的高斯方向在单元测试中误差略大，是因为密度总梯度中**质量项与刚度
-链式项接近抵消**（两项约 $7\times10^{-9}$，总梯度约 $2\times10^{-11}$），
-相对误差被放大；绝对误差约 $4\times10^{-13}$。演示脚本中方向/尺度不同，
-相对误差为 $2.3\times10^{-7}$。逐项检验：
+rho 鐨勯珮鏂柟鍚戝湪鍗曞厓娴嬭瘯涓宸暐澶э紝鏄洜涓哄瘑搴︽€绘搴︿腑**璐ㄩ噺椤逛笌鍒氬害
+閾惧紡椤规帴杩戞姷娑?*锛堜袱椤圭害 $7\times10^{-9}$锛屾€绘搴︾害 $2\times10^{-11}$锛夛紝
+鐩稿璇樊琚斁澶э紱缁濆璇樊绾?$4\times10^{-13}$銆傛紨绀鸿剼鏈腑鏂瑰悜/灏哄害涓嶅悓锛?鐩稿璇樊涓?$2.3\times10^{-7}$銆傞€愰」妫€楠岋細
 
-* 仅质量项（固定 C，只改 $\rho$）：方向导数误差 $<10^{-6}$；
-* 仅刚度链式项（固定质量，只改 C）：误差 $4.5\times10^{-8}$。
+* 浠呰川閲忛」锛堝浐瀹?C锛屽彧鏀?$\rho$锛夛細鏂瑰悜瀵兼暟璇樊 $<10^{-6}$锛?* 浠呭垰搴﹂摼寮忛」锛堝浐瀹氳川閲忥紝鍙敼 C锛夛細璇樊 $4.5\times10^{-8}$銆?
+### 8.3 瀵嗗害鏃堕棿椤哄簭鍥炲綊
 
-### 8.3 密度时间顺序回归
-
-同一随机观测、同模型，只改记录长度，比较密度方向导数：
-
-| nt | 修正前 adj/fd | 修正后 adj/fd |
+鍚屼竴闅忔満瑙傛祴銆佸悓妯″瀷锛屽彧鏀硅褰曢暱搴︼紝姣旇緝瀵嗗害鏂瑰悜瀵兼暟锛?
+| nt | 淇鍓?adj/fd | 淇鍚?adj/fd |
 |---:|---:|---:|
 | 3 | 0.9982 | 0.9999998 |
 | 5 | 1.0474 | 1.0000001 |
 | 10 | 1.0632 | 1.0000001 |
 | 30 | 1.0608 | 1.0000001 |
 
-说明密度项必须用 $ṽ^{n-1/2}$ 的顺序修正。
-
-### 8.4 运行
+璇存槑瀵嗗害椤瑰繀椤荤敤 $v虄^{n-1/2}$ 鐨勯『搴忎慨姝ｃ€?
+### 8.4 杩愯
 
 ```powershell
 .venv\Scripts\python.exe scripts\check_gradient.py
 .venv\Scripts\python.exe -m unittest tests.test_gradient -v
 ```
 
-当前完整测试集 **46 个测试全部通过**（含各向异性 epsilon/delta 梯度、
-单炮/多炮累积、伴随转置恒等式）。
+褰撳墠瀹屾暣娴嬭瘯闆?**46 涓祴璇曞叏閮ㄩ€氳繃**锛堝惈鍚勫悜寮傛€?epsilon/delta 姊害銆?鍗曠偖/澶氱偖绱Н銆佷即闅忚浆缃亽绛夊紡锛夈€?
+---
+
+## 9. 鎺ュ彛璇存槑
+
+| 鎺ュ彛 | 浣滅敤 |
+|---|---|
+| `efwi.adjoint.data_residual(syn, obs)` | 娈嬪樊涓庤娴嬭兘閲?|
+| `efwi.adjoint.objective(res)` | 褰掍竴鍖?鍘熷鐩爣鍑芥暟 |
+| `efwi.adjoint.adjoint_source(res, gain=1)` | 鏁版嵁绌洪棿浼撮殢婧?|
+| `Elastic2DOperator.compute_shot_gradient(s, model, obs_s)` | 鍗曠偖鍘熷姊害 |
+| `Elastic2DOperator.compute_gradient(model, obs, keep_shot_gradients=False)` | 鍏ㄩ儴鐐綊涓€鍖栨搴︼紙榛樿涓嶄繚鐣欓€愮偖鏁版嵁锛?|
+| `efwi.adjoint.ShotGradientAccumulator` | 閫愮偖绱Н + 褰掍竴鍖?|
+| `efwi.adjoint.compute_adjoint_gradients(op, model, obs)` | 楂樺眰 API锛岃繑鍥?vp/vs/rho |
+| `efwi.adjoint.directional_derivative(...)` | 涓績宸垎鏂瑰悜瀵兼暟 |
+| `efwi.adjoint.check_gradient(...)` | 閫愬弬鏁版湁闄愬樊鍒嗘楠?|
+| `efwi.gradient.convert_gradient(...)` | 鍘熺敓 C/rho -> vp/vs/rho |
+
+`ShotGradient` 瀛楁锛?
+| 瀛楁 | 鍚箟 |
+|---|---|
+| `misfit_raw` | $0.5\sum r^2$锛堟湭褰掍竴鍖栵級 |
+| `g` | `c11/c13/c33/c44/rho` 鍘熺敓姊害锛堢墿鐞嗙綉鏍硷級 |
+| `h` | 浼?Hessian 瀵硅 |
+| `synthetic/residuals` | 鍗曠偖鍚堟垚鏁版嵁涓庢畫宸?|
+| `storage_stride` | 姝ｆ紨瀛樺偍鎶界█姝ラ暱 |
 
 ---
 
-## 9. 接口说明
-
-| 接口 | 作用 |
-|---|---|
-| `efwi.adjoint.data_residual(syn, obs)` | 残差与观测能量 |
-| `efwi.adjoint.objective(res)` | 归一化/原始目标函数 |
-| `efwi.adjoint.adjoint_source(res, gain=1)` | 数据空间伴随源 |
-| `Elastic2DOperator.compute_shot_gradient(s, model, obs_s)` | 单炮原始梯度 |
-| `Elastic2DOperator.compute_gradient(model, obs, keep_shot_gradients=False)` | 全部炮归一化梯度（默认不保留逐炮数据） |
-| `efwi.adjoint.ShotGradientAccumulator` | 逐炮累积 + 归一化 |
-| `efwi.adjoint.compute_adjoint_gradients(op, model, obs)` | 高层 API，返回 vp/vs/rho |
-| `efwi.adjoint.directional_derivative(...)` | 中心差分方向导数 |
-| `efwi.adjoint.check_gradient(...)` | 逐参数有限差分检验 |
-| `efwi.gradient.convert_gradient(...)` | 原生 C/rho -> vp/vs/rho |
-
-`ShotGradient` 字段：
-
-| 字段 | 含义 |
-|---|---|
-| `misfit_raw` | $0.5\sum r^2$（未归一化） |
-| `g` | `c11/c13/c33/c44/rho` 原生梯度（物理网格） |
-| `h` | 伪 Hessian 对角 |
-| `synthetic/residuals` | 单炮合成数据与残差 |
-| `storage_stride` | 正演存储抽稀步长 |
-
----
-
-## 10. 复现命令
+## 10. 澶嶇幇鍛戒护
 
 ```powershell
-# 梯度方向导数检验（打印表格并写 JSON）
-.venv\Scripts\python.exe scripts\check_gradient.py
+# 姊害鏂瑰悜瀵兼暟妫€楠岋紙鎵撳嵃琛ㄦ牸骞跺啓 JSON锛?.venv\Scripts\python.exe scripts\check_gradient.py
 
-# 全部测试
+# 鍏ㄩ儴娴嬭瘯
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 
-# 完整 EFWI + RTM 演示
+# 瀹屾暣 EFWI + RTM 婕旂ず
 .venv\Scripts\python.exe scripts\run_demo.py --iterations 3
 ```
+

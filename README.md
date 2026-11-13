@@ -42,6 +42,9 @@
 # 伪 Hessian 预条件 + 多尺度频带对比图/报告
 .venv\Scripts\python.exe scripts\run_preconditioning_demo.py
 
+# 实际 SEG-Y：读取 → QC → 预处理 → 写回
+.venv\Scripts\python.exe scripts\run_segy_qc.py data\line.sgy --out runs/segy_qc
+
 # 全部单元测试
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
@@ -82,6 +85,10 @@ SeismicProjectEFWI/
 │   ├── fd/
 │   │   ├── kernels.py     # Numba 正演/伴随/成像核
 │   │   └── operator.py    # 弹性波正演、梯度、RTM 算子
+│   ├── io.py              # SEG-Y 读取/写回、观测系统映射、QC
+│   ├── preprocess.py      # 直达波/FK/均衡/相位/子波估计
+│   ├── topography.py      # 高程静校正、替换速度、浮动 datum
+│   ├── fd3d/              # 三维弹性波正演（梯度实验性，默认禁用）
 │   ├── adjoint.py         # 残差/目标函数/伴随源/逐炮累积/有限差分检验
 │   ├── gradient.py        # 刚度梯度 -> vp/vs/rho/epsilon/delta
 │   ├── pseudo_hessian.py  # 伪 Hessian 照明补偿
@@ -346,4 +353,5 @@ g_pre = g / (H + eta*max(H) + water_level*max(H) + min_h)
 
 * [docs/EFWI_设计与实现.md](docs/EFWI_设计与实现.md) — 正演、多尺度、伪 Hessian、约束、RTM、测井、闭环；
 * [docs/EFWI_梯度推导.md](docs/EFWI_梯度推导.md) — 残差/目标函数、伴随源、离散伴随、密度时间顺序、链式梯度、逐炮累积、有限差分检验结果与接口；
-* [docs/EFWI_梯度预处理与多尺度.md](docs/EFWI_梯度预处理与多尺度.md) — 伪 Hessian 定义/计算、预条件稳定性、Wiener 频带与调度策略、对比图和测试报告。
+* [docs/EFWI_梯度预处理与多尺度.md](docs/EFWI_梯度预处理与多尺度.md) — 伪 Hessian 定义/计算、预条件稳定性、Wiener 频带与调度策略、对比图和测试报告；
+* [docs/EFWI_实际资料与P0.md](docs/EFWI_实际资料与P0.md) — SEG-Y、预处理、自由表面/地形和三维模块的状态、接口与限制。

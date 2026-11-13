@@ -1,28 +1,20 @@
-# EFWI 伪 Hessian 预条件与多尺度优化
+﻿# EFWI 浼?Hessian 棰勬潯浠朵笌澶氬昂搴︿紭鍖?
+鏈枃妗ｅ搴斾唬鐮侊細
 
-本文档对应代码：
-
-* `efwi/fd/kernels.py`：正演敏感场、`H_theta`、原生刚度/密度照明累积；
-* `efwi/gradient.py`：参数空间伪 Hessian、预条件与链式转换；
-* `efwi/pseudo_hessian.py`：伪 Hessian 诊断/封装；
-* `efwi/filters.py`：Wiener 带通、频带校验、能量统计；
-* `efwi/inversion.py`：多尺度调度、带限子波、预条件 EFWI；
-* `scripts/run_preconditioning_demo.py`：对比图与测试报告生成。
-
+* `efwi/fd/kernels.py`锛氭婕旀晱鎰熷満銆乣H_theta`銆佸師鐢熷垰搴?瀵嗗害鐓ф槑绱Н锛?* `efwi/gradient.py`锛氬弬鏁扮┖闂翠吉 Hessian銆侀鏉′欢涓庨摼寮忚浆鎹紱
+* `efwi/pseudo_hessian.py`锛氫吉 Hessian 璇婃柇/灏佽锛?* `efwi/filters.py`锛歐iener 甯﹂€氥€侀甯︽牎楠屻€佽兘閲忕粺璁★紱
+* `efwi/inversion.py`锛氬灏哄害璋冨害銆佸甫闄愬瓙娉€侀鏉′欢 EFWI锛?* `scripts/run_preconditioning_demo.py`锛氬姣斿浘涓庢祴璇曟姤鍛婄敓鎴愩€?
 ---
 
-## 1. 伪 Hessian 的定义
-
-全 Hessian 为
-
+## 1. 浼?Hessian 鐨勫畾涔?
+鍏?Hessian 涓?
 $$
 H_{ij}(x)=\sum_s\int_0^T
 \left(\frac{\partial d_s}{\partial m_i(x)}\right)^T
 \left(\frac{\partial d_s}{\partial m_j(x)}\right)dt,
 $$
 
-直接计算不可行。伪 Hessian 采用**高频近似 + 无限孔径 + 只保留对角元**：
-
+鐩存帴璁＄畻涓嶅彲琛屻€備吉 Hessian 閲囩敤**楂橀杩戜技 + 鏃犻檺瀛斿緞 + 鍙繚鐣欏瑙掑厓**锛?
 $$
 \boxed{
 H_{pp}(x)=\sum_s\int_0^T
@@ -30,31 +22,25 @@ H_{pp}(x)=\sum_s\int_0^T
 }
 $$
 
-其中 \(S_p(x,t)\) 是参数 \(p\) 的**虚拟源/散射源**：当模型参数发生
-\(\delta p\) 扰动时，正演方程右端新增的源项。它不是对梯度做平滑，也不是
-对反演结果做图像处理。
-
-### 1.1 各向同性弹性参数
-
-记
-
+鍏朵腑 \(S_p(x,t)\) 鏄弬鏁?\(p\) 鐨?*铏氭嫙婧?鏁ｅ皠婧?*锛氬綋妯″瀷鍙傛暟鍙戠敓
+\(\delta p\) 鎵板姩鏃讹紝姝ｆ紨鏂圭▼鍙崇鏂板鐨勬簮椤广€傚畠涓嶆槸瀵规搴﹀仛骞虫粦锛屼篃涓嶆槸
+瀵瑰弽婕旂粨鏋滃仛鍥惧儚澶勭悊銆?
+### 1.1 鍚勫悜鍚屾€у脊鎬у弬鏁?
+璁?
 $$
 \theta=\dot\varepsilon_{xx}+\dot\varepsilon_{zz},\qquad
 \dot\varepsilon_{xz}=\partial_z v_x+\partial_x v_z.
 $$
 
-由
-
+鐢?
 $$
 C_{11}=C_{33}=\rho v_p^2,\quad
 C_{13}=\rho(v_p^2-2v_s^2),\quad
 C_{44}=\rho v_s^2
 $$
 
-可得：
-
-**vp 的虚拟源**（sxx、szz 各一份）：
-
+鍙緱锛?
+**vp 鐨勮櫄鎷熸簮**锛坰xx銆乻zz 鍚勪竴浠斤級锛?
 $$
 S_{v_p}^{xx}=S_{v_p}^{zz}=2\rho v_p\theta,\qquad S_{v_p}^{xz}=0,
 $$
@@ -66,11 +52,9 @@ H_{v_p}=2\int(2\rho v_p\theta)^2dt
 }
 $$
 
-代码中正演时累积 `H_theta=∫θ²dt`（`accumulate_theta_hessian`），再乘
-`8*rho^2*vp^2`。
-
-**vs 的虚拟源**：
-
+浠ｇ爜涓婕旀椂绱Н `H_theta=鈭嘎瞕t`锛坄accumulate_theta_hessian`锛夛紝鍐嶄箻
+`8*rho^2*vp^2`銆?
+**vs 鐨勮櫄鎷熸簮**锛?
 $$
 S_{v_s}^{xx}=-4\rho v_s\dot\varepsilon_{zz},\quad
 S_{v_s}^{zz}=-4\rho v_s\dot\varepsilon_{xx},\quad
@@ -84,8 +68,7 @@ H_{v_s}=16\rho^2v_s^2\int(\dot\varepsilon_{xx}^2+\dot\varepsilon_{zz}^2)dt
 }
 $$
 
-**rho**：密度同时出现在质量项和刚度中。代码使用
-
+**rho**锛氬瘑搴﹀悓鏃跺嚭鐜板湪璐ㄩ噺椤瑰拰鍒氬害涓€備唬鐮佷娇鐢?
 $$
 H_\rho=H_\rho^{\text{mass}}
 +\left(\frac{\partial C_{11}}{\partial\rho}\right)^2H_{C11}
@@ -94,7 +77,7 @@ H_\rho=H_\rho^{\text{mass}}
 +\left(\frac{\partial C_{44}}{\partial\rho}\right)^2H_{C44},
 $$
 
-其中
+鍏朵腑
 
 $$
 H_\rho^{\text{mass}}
@@ -102,23 +85,18 @@ H_\rho^{\text{mass}}
 \left(\frac{a_z}{\rho_z}\right)^2\right]dt,
 $$
 
-\(a=(Ds+f)/\rho\) 是加速度。这是密度参数在质量项 + 刚度链式下的对角近似。
-
-### 1.2 各向异性
-
-VTI/HTI 使用刚度分量对角照明 \(H_{C11},H_{C13},H_{C33},H_{C44}\)，再按
-`dC/dp` 链式平方：
-
+\(a=(Ds+f)/\rho\) 鏄姞閫熷害銆傝繖鏄瘑搴﹀弬鏁板湪璐ㄩ噺椤?+ 鍒氬害閾惧紡涓嬬殑瀵硅杩戜技銆?
+### 1.2 鍚勫悜寮傛€?
+VTI/HTI 浣跨敤鍒氬害鍒嗛噺瀵硅鐓ф槑 \(H_{C11},H_{C13},H_{C33},H_{C44}\)锛屽啀鎸?`dC/dp` 閾惧紡骞虫柟锛?
 $$
 H_p\approx\sum_C\left(\frac{\partial C}{\partial p}\right)^2H_C.
 $$
 
-各向异性目前不做 vp 的 \(\theta\) 修正；这是已知的近似，测试中只对
-各向同性 vp 使用直接虚拟源公式。
+鍚勫悜寮傛€х洰鍓嶄笉鍋?vp 鐨?\(\theta\) 淇锛涜繖鏄凡鐭ョ殑杩戜技锛屾祴璇曚腑鍙
+鍚勫悜鍚屾€?vp 浣跨敤鐩存帴铏氭嫙婧愬叕寮忋€?
+### 1.3 璁＄畻娴佺▼
 
-### 1.3 计算流程
-
-每个正演时间步（仅 `hessian=True`）：
+姣忎釜姝ｆ紨鏃堕棿姝ワ紙浠?`hessian=True`锛夛細
 
 ```
 exx, ezz, exz = E v
@@ -130,14 +108,12 @@ H_rho += dt*((ax/rho_x)^2+(az/rho_z)^2)
 H_theta += dt*(exx+ezz)^2
 ```
 
-所有炮集求和后，转换到 `(vp, vs, rho)`。`H` 与梯度由**同一组正演敏感场**
-得到，避免额外正演。
-
+鎵€鏈夌偖闆嗘眰鍜屽悗锛岃浆鎹㈠埌 `(vp, vs, rho)`銆俙H` 涓庢搴︾敱**鍚屼竴缁勬婕旀晱鎰熷満**
+寰楀埌锛岄伩鍏嶉澶栨婕斻€?
 ---
 
-## 2. 梯度预处理
-
-### 2.1 公式
+## 2. 姊害棰勫鐞?
+### 2.1 鍏紡
 
 $$
 \boxed{
@@ -146,127 +122,94 @@ g_p^{\text{pre}}=
 }
 $$
 
-其中：
-
-* \(\eta\)：`ph_damping`，默认 `1e-3`；
-* \(\eta_w\)：`ph_water_level`，默认 `0.0`（演示中使用 `1e-3`）；
-* \(h_{\min}\)：`ph_min_h`，绝对水层；
-* 对 \(H\) 做高斯平滑（`ph_smooth=2`）**只用于稳定对角估计**。H 本身的
-  计算由虚拟源平方积分给出，不是“简单平滑替代”。
-
-### 2.2 数值稳定措施
-
-1. **相对水层**：\(\eta\max H\) 防止 \(H\to0\) 时除零；
-2. **额外水层/绝对水层**：控制深部极弱照明；
-3. **最大增益 cap**：以中位增益为典型值，限制
+鍏朵腑锛?
+* \(\eta\)锛歚ph_damping`锛岄粯璁?`1e-3`锛?* \(\eta_w\)锛歚ph_water_level`锛岄粯璁?`0.0`锛堟紨绀轰腑浣跨敤 `1e-3`锛夛紱
+* \(h_{\min}\)锛歚ph_min_h`锛岀粷瀵规按灞傦紱
+* 瀵?\(H\) 鍋氶珮鏂钩婊戯紙`ph_smooth=2`锛?*鍙敤浜庣ǔ瀹氬瑙掍及璁?*銆侶 鏈韩鐨?  璁＄畻鐢辫櫄鎷熸簮骞虫柟绉垎缁欏嚭锛屼笉鏄€滅畝鍗曞钩婊戞浛浠ｂ€濄€?
+### 2.2 鏁板€肩ǔ瀹氭帾鏂?
+1. **鐩稿姘村眰**锛歕(\eta\max H\) 闃叉 \(H\to0\) 鏃堕櫎闆讹紱
+2. **棰濆姘村眰/缁濆姘村眰**锛氭帶鍒舵繁閮ㄦ瀬寮辩収鏄庯紱
+3. **鏈€澶у鐩?cap**锛氫互涓綅澧炵泭涓哄吀鍨嬪€硷紝闄愬埗
 
 $$
 \text{gain}\le \text{max\_gain}\times \text{median(gain)},
 $$
 
-   默认 `ph_max_gain=20`。这防止深部噪声被放大 3–4 个数量级；
-4. **非有限值清零**：`nan_to_num`；
-5. **可选归一化**：预条件后按原始梯度 RMS 归一到同一量级，保持
-   vp/vs/rho 参数间尺度一致（`ph_normalize=True`）。归一化不改变空间
-   照明补偿模式，只改变整体尺度。
-
-### 2.3 预条件前后差异
-
-以演示（81×61，2 炮，初始模型）为例：
+   榛樿 `ph_max_gain=20`銆傝繖闃叉娣遍儴鍣０琚斁澶?3鈥? 涓暟閲忕骇锛?4. **闈炴湁闄愬€兼竻闆?*锛歚nan_to_num`锛?5. **鍙€夊綊涓€鍖?*锛氶鏉′欢鍚庢寜鍘熷姊害 RMS 褰掍竴鍒板悓涓€閲忕骇锛屼繚鎸?   vp/vs/rho 鍙傛暟闂村昂搴︿竴鑷达紙`ph_normalize=True`锛夈€傚綊涓€鍖栦笉鏀瑰彉绌洪棿
+   鐓ф槑琛ュ伩妯″紡锛屽彧鏀瑰彉鏁翠綋灏哄害銆?
+### 2.3 棰勬潯浠跺墠鍚庡樊寮?
+浠ユ紨绀猴紙81脳61锛? 鐐紝鍒濆妯″瀷锛変负渚嬶細
 
 | stage | param | raw RMS | pre RMS | deep gain | shallow gain | deep boost |
 |---|---|---:|---:|---:|---:|---:|
-| 2–8 Hz | vp | 1.403e-06 | 2.028e-07 | 2.48 | 0.144 | 17.2 |
-| 2–8 Hz | vs | 1.320e-06 | 3.317e-07 | 4.89 | 0.250 | 19.5 |
-| 2–8 Hz | rho | 6.018e-07 | 8.971e-07 | 20.4 | 1.485 | 13.7 |
-| 3–15 Hz | vp | 1.296e-06 | 3.462e-08 | 0.120 | 0.0267 | 4.50 |
-| 3–15 Hz | vs | 1.152e-06 | 5.128e-08 | 0.238 | 0.0445 | 5.34 |
-| 3–15 Hz | rho | 5.392e-07 | 8.322e-08 | 0.840 | 0.154 | 5.45 |
+| 2鈥? Hz | vp | 1.403e-06 | 2.028e-07 | 2.48 | 0.144 | 17.2 |
+| 2鈥? Hz | vs | 1.320e-06 | 3.317e-07 | 4.89 | 0.250 | 19.5 |
+| 2鈥? Hz | rho | 6.018e-07 | 8.971e-07 | 20.4 | 1.485 | 13.7 |
+| 3鈥?5 Hz | vp | 1.296e-06 | 3.462e-08 | 0.120 | 0.0267 | 4.50 |
+| 3鈥?5 Hz | vs | 1.152e-06 | 5.128e-08 | 0.238 | 0.0445 | 5.34 |
+| 3鈥?5 Hz | rho | 5.392e-07 | 8.322e-08 | 0.840 | 0.154 | 5.45 |
 
-（数值由 `scripts/run_preconditioning_demo.py` 自动写入 `runs/preconditioning/report.md`；
-换网格/炮集后会变化。）
+锛堟暟鍊肩敱 `scripts/run_preconditioning_demo.py` 鑷姩鍐欏叆 `runs/preconditioning/report.md`锛?鎹㈢綉鏍?鐐泦鍚庝細鍙樺寲銆傦級
 
-`deep gain` 是深部（\(z>0.55z_{\max}\)）预条件/原始梯度 RMS 比；
-`deep boost = deep gain / shallow gain` 表示相对浅部的照明补偿倍数。可以看到
-预条件把深部相对浅部的梯度能量提高了约 4.5–19.5 倍（随频带/参数变化）。
-
-> 对比图中 raw/H/pre 三列各自独立裁剪显示，因此不能用图的颜色幅度直接
-> 比较绝对大小；绝对比例见 `report.md` 的 `scale` 列。
-
+`deep gain` 鏄繁閮紙\(z>0.55z_{\max}\)锛夐鏉′欢/鍘熷姊害 RMS 姣旓紱
+`deep boost = deep gain / shallow gain` 琛ㄧず鐩稿娴呴儴鐨勭収鏄庤ˉ鍋垮€嶆暟銆傚彲浠ョ湅鍒?棰勬潯浠舵妸娣遍儴鐩稿娴呴儴鐨勬搴﹁兘閲忔彁楂樹簡绾?4.5鈥?9.5 鍊嶏紙闅忛甯?鍙傛暟鍙樺寲锛夈€?
+> 瀵规瘮鍥句腑 raw/H/pre 涓夊垪鍚勮嚜鐙珛瑁佸壀鏄剧ず锛屽洜姝や笉鑳界敤鍥剧殑棰滆壊骞呭害鐩存帴
+> 姣旇緝缁濆澶у皬锛涚粷瀵规瘮渚嬭 `report.md` 鐨?`scale` 鍒椼€?
 ---
 
-## 3. 多尺度滤波
-
-### 3.1 滤波器类型
-
-`WienerFilter` 是**零相位 Wiener 带通**，不是简单 Butterworth：
-
-1. 以当前炮集为参考，去直流、加 5% Tukey 窗；
-2. 用 4 阶 Butterworth 带通构造理想目标 \(y\)；
-3. 频域最小二乘
-
+## 3. 澶氬昂搴︽护娉?
+### 3.1 婊ゆ尝鍣ㄧ被鍨?
+`WienerFilter` 鏄?*闆剁浉浣?Wiener 甯﹂€?*锛屼笉鏄畝鍗?Butterworth锛?
+1. 浠ュ綋鍓嶇偖闆嗕负鍙傝€冿紝鍘荤洿娴併€佸姞 5% Tukey 绐楋紱
+2. 鐢?4 闃?Butterworth 甯﹂€氭瀯閫犵悊鎯崇洰鏍?\(y\)锛?3. 棰戝煙鏈€灏忎簩涔?
 $$
 H(f)=\frac{P_{xy}(f)}{P_{xx}(f)+\epsilon\max P_{xx}},
 $$
 
-4. 对 \(H\) 做 1 Hz 平滑、限幅 `[0,1.5]`；
-5. 在 `[f_low/√2, f_high*√2]` 外做余弦掩膜，防止噪声频段放大。
-
-参数：
-
-| 参数 | 默认 | 作用 |
+4. 瀵?\(H\) 鍋?1 Hz 骞虫粦銆侀檺骞?`[0,1.5]`锛?5. 鍦?`[f_low/鈭?, f_high*鈭?]` 澶栧仛浣欏鸡鎺╄啘锛岄槻姝㈠櫔澹伴娈垫斁澶с€?
+鍙傛暟锛?
+| 鍙傛暟 | 榛樿 | 浣滅敤 |
 |---|---:|---|
-| `order` | 4 | Butterworth 目标阶数 |
-| `eps` | 1e-3 | Wiener 正则化 |
-| `mask_octaves` | 0.5 | 频带外掩膜过渡 |
-| `smooth` | 1.0 Hz | 响应平滑 |
-| `taper` | 5% | 时窗，抑制周期延拓 |
+| `order` | 4 | Butterworth 鐩爣闃舵暟 |
+| `eps` | 1e-3 | Wiener 姝ｅ垯鍖?|
+| `mask_octaves` | 0.5 | 棰戝甫澶栨帺鑶滆繃娓?|
+| `smooth` | 1.0 Hz | 鍝嶅簲骞虫粦 |
+| `taper` | 5% | 鏃剁獥锛屾姂鍒跺懆鏈熷欢鎷?|
 
-### 3.2 频带与子波
-
-默认：
-
-| 阶段 | 频带 | 迭代 | 目的 |
+### 3.2 棰戝甫涓庡瓙娉?
+榛樿锛?
+| 闃舵 | 棰戝甫 | 杩唬 | 鐩殑 |
 |---|---|---:|---|
-| `band_8Hz` | 2–8 Hz | 25 | 建立大尺度构造，缓解周跳 |
-| `band_15Hz` | 3–15 Hz | 25 | 刻划细节 |
+| `band_8Hz` | 2鈥? Hz | 25 | 寤虹珛澶у昂搴︽瀯閫狅紝缂撹В鍛ㄨ烦 |
+| `band_15Hz` | 3鈥?5 Hz | 25 | 鍒诲垝缁嗚妭 |
 
-**带限子波**：每个阶段把 Wiener 响应作用到震源子波上，再用带限子波正演。
-这样伪 Hessian 是**当前频带的照明**，而不是全频带照明；在线性滤波假设下，
-这与“对合成数据做同带滤波”等价，但 H 的物理含义更合理。
-
+**甯﹂檺瀛愭尝**锛氭瘡涓樁娈垫妸 Wiener 鍝嶅簲浣滅敤鍒伴渿婧愬瓙娉笂锛屽啀鐢ㄥ甫闄愬瓙娉㈡婕斻€?杩欐牱浼?Hessian 鏄?*褰撳墠棰戝甫鐨勭収鏄?*锛岃€屼笉鏄叏棰戝甫鐓ф槑锛涘湪绾挎€ф护娉㈠亣璁句笅锛?杩欎笌鈥滃鍚堟垚鏁版嵁鍋氬悓甯︽护娉⑩€濈瓑浠凤紝浣?H 鐨勭墿鐞嗗惈涔夋洿鍚堢悊銆?
 ---
 
-## 4. 多尺度调度策略
-
-`efwi.filters.validate_stages` 强制：
-
-1. \(0<f_{low}<f_{high}\)；
-2. \(f_{high}\) 单调不减（从低频到高频递进）；
-3. \(f_{high}<0.95f_{Nyquist}\)。
-
-调度流程：
-
+## 4. 澶氬昂搴﹁皟搴︾瓥鐣?
+`efwi.filters.validate_stages` 寮哄埗锛?
+1. \(0<f_{low}<f_{high}\)锛?2. \(f_{high}\) 鍗曡皟涓嶅噺锛堜粠浣庨鍒伴珮棰戦€掕繘锛夛紱
+3. \(f_{high}<0.95f_{Nyquist}\)銆?
+璋冨害娴佺▼锛?
 ```
 for stage in stages:
     filt = WienerFilter.design(observed, dt, stage.f_low, stage.f_high)
     stage_wavelet = filt.apply(survey.wavelet)
     obs_f = filt.apply(observed)
-    op.set_survey(stage_survey)        # 带限子波
+    op.set_survey(stage_survey)        # 甯﹂檺瀛愭尝
     reset L-BFGS
     for it in stage.n_iter:
-        gradient + pseudo-Hessian (当前频带)
+        gradient + pseudo-Hessian (褰撳墠棰戝甫)
         precondition
         L-BFGS + parabolic line search
         constraints
 ```
 
-* 频带间**保留模型**（warm start），不重置模型；
-* 每个频带重置 L-BFGS 历史（不同频带曲率差异大）；
-* 目标函数按观测能量归一化，跨频带可比；
-* 阶段结果记录 `stage_summaries`、`stage_models`，供报告/图使用。
-
-可自定义三阶段：
+* 棰戝甫闂?*淇濈暀妯″瀷**锛坵arm start锛夛紝涓嶉噸缃ā鍨嬶紱
+* 姣忎釜棰戝甫閲嶇疆 L-BFGS 鍘嗗彶锛堜笉鍚岄甯︽洸鐜囧樊寮傚ぇ锛夛紱
+* 鐩爣鍑芥暟鎸夎娴嬭兘閲忓綊涓€鍖栵紝璺ㄩ甯﹀彲姣旓紱
+* 闃舵缁撴灉璁板綍 `stage_summaries`銆乣stage_models`锛屼緵鎶ュ憡/鍥句娇鐢ㄣ€?
+鍙嚜瀹氫箟涓夐樁娈碉細
 
 ```powershell
 .venv\Scripts\python.exe scripts\run_preconditioning_demo.py --stages "2-8,3-12,3-18" --iterations 3
@@ -274,14 +217,11 @@ for stage in stages:
 
 ---
 
-## 5. 稳定性测试
-
-`scripts/run_preconditioning_demo.py` 对 \(\eta=10^{-8}\dots10^{-1}\) 扫描，
-并启用 `max_gain=20`：
-
+## 5. 绋冲畾鎬ф祴璇?
+`scripts/run_preconditioning_demo.py` 瀵?\(\eta=10^{-8}\dots10^{-1}\) 鎵弿锛?骞跺惎鐢?`max_gain=20`锛?
 | param | \(\eta\) | max gain / median gain |
 |---|---:|---:|
-| vp | 1e-8 | 20.0（cap） |
+| vp | 1e-8 | 20.0锛坈ap锛?|
 | vp | 1e-5 | 5.12 |
 | vp | 1e-3 | 1.04 |
 | vp | 1e-1 | 1.00 |
@@ -290,58 +230,47 @@ for stage in stages:
 | rho | 1e-8 | 20.0 |
 | rho | 1e-3 | 1.10 |
 
-结论：
-
-* 小阻尼时 cap 把极端增益限制在 20× 中位增益；
-* 阻尼增大后增益趋于 1（预条件逐渐退化为原始梯度）；
-* 所有预条件梯度 `finite=True`，无 NaN/Inf；
-* `tests/test_precondition.py` 验证了“无 cap 时严格等于解析公式”、
-  “零 H 输出零梯度”、“弱照明+噪声不爆炸”。
-
+缁撹锛?
+* 灏忛樆灏兼椂 cap 鎶婃瀬绔鐩婇檺鍒跺湪 20脳 涓綅澧炵泭锛?* 闃诲凹澧炲ぇ鍚庡鐩婅秼浜?1锛堥鏉′欢閫愭笎閫€鍖栦负鍘熷姊害锛夛紱
+* 鎵€鏈夐鏉′欢姊害 `finite=True`锛屾棤 NaN/Inf锛?* `tests/test_precondition.py` 楠岃瘉浜嗏€滄棤 cap 鏃朵弗鏍肩瓑浜庤В鏋愬叕寮忊€濄€?  鈥滈浂 H 杈撳嚭闆舵搴︹€濄€佲€滃急鐓ф槑+鍣０涓嶇垎鐐糕€濄€?
 ---
 
-## 6. 输出
+## 6. 杈撳嚭
 
-运行：
-
+杩愯锛?
 ```powershell
 .venv\Scripts\python.exe scripts\run_preconditioning_demo.py
 ```
 
-输出 `runs/preconditioning/`：
-
+杈撳嚭 `runs/preconditioning/`锛?
 ```
-report.md / report.json              # 调度、梯度统计、稳定性、阶段 misfit
-stage_01_gradient.png               # raw / H / pre 三列对比
+report.md / report.json              # 璋冨害銆佹搴︾粺璁°€佺ǔ瀹氭€с€侀樁娈?misfit
+stage_01_gradient.png               # raw / H / pre 涓夊垪瀵规瘮
 stage_02_gradient.png
-filter_responses.png                # 各频带 Wiener 响应
-data_spectra.png                    # 原始/分频带振幅谱
-precondition_stability.png          # 阻尼-增益 cap 曲线
-stage_models.png                    # 初始/各频带模型/真模型
-stage_convergence.png
+filter_responses.png                # 鍚勯甯?Wiener 鍝嶅簲
+data_spectra.png                    # 鍘熷/鍒嗛甯︽尟骞呰氨
+precondition_stability.png          # 闃诲凹-澧炵泭 cap 鏇茬嚎
+stage_models.png                    # 鍒濆/鍚勯甯︽ā鍨?鐪熸ā鍨?stage_convergence.png
 fwi/model_stage_01.npz ...
 ```
 
-测试：
-
+娴嬭瘯锛?
 ```powershell
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-本模块新增 `tests/test_precondition.py`、`tests/test_multiscale.py`，当前
-**46 个测试全部通过**（含梯度、RTM、测井、各向异性、闭环）。
-
+鏈ā鍧楁柊澧?`tests/test_precondition.py`銆乣tests/test_multiscale.py`锛屽綋鍓?**46 涓祴璇曞叏閮ㄩ€氳繃**锛堝惈姊害銆丷TM銆佹祴浜曘€佸悇鍚戝紓鎬с€侀棴鐜級銆?
 ---
 
-## 7. 配置项
-
-| 字段 | 默认 | 说明 |
+## 7. 閰嶇疆椤?
+| 瀛楁 | 榛樿 | 璇存槑 |
 |---|---:|---|
-| `FWIConfig.pseudo_hessian` | True | 启用伪 Hessian |
-| `ph_damping` | 1e-3 | 相对水层 |
-| `ph_water_level` | 0.0 | 额外相对水层 |
-| `ph_min_h` | 0.0 | 绝对水层 |
-| `ph_max_gain` | 20.0 | 最大/中位增益比 |
-| `ph_smooth` | 2 | 仅平滑 H 对角估计 |
-| `ph_normalize` | True | 预条件后 RMS 归一化 |
-| `StageConfig.f_low/f_high/n_iter` | — | 频带与迭代数 |
+| `FWIConfig.pseudo_hessian` | True | 鍚敤浼?Hessian |
+| `ph_damping` | 1e-3 | 鐩稿姘村眰 |
+| `ph_water_level` | 0.0 | 棰濆鐩稿姘村眰 |
+| `ph_min_h` | 0.0 | 缁濆姘村眰 |
+| `ph_max_gain` | 20.0 | 鏈€澶?涓綅澧炵泭姣?|
+| `ph_smooth` | 2 | 浠呭钩婊?H 瀵硅浼拌 |
+| `ph_normalize` | True | 棰勬潯浠跺悗 RMS 褰掍竴鍖?|
+| `StageConfig.f_low/f_high/n_iter` | 鈥?| 棰戝甫涓庤凯浠ｆ暟 |
+

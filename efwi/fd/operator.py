@@ -100,6 +100,7 @@ class Elastic2DOperator:
         sponge_strength: float = 3.0,
         storage_mb: float = 512.0,
         strict_dt: bool = True,
+        free_surface: bool = False,
         verbose: bool = False,
     ) -> None:
         if grid is None:
@@ -115,6 +116,7 @@ class Elastic2DOperator:
         self.sponge_strength = float(sponge_strength)
         self.storage_mb = float(storage_mb)
         self.strict_dt = bool(strict_dt)
+        self.free_surface = bool(free_surface)
         self.verbose = bool(verbose)
 
         self.pad = grid.pad
@@ -230,7 +232,25 @@ class Elastic2DOperator:
             inside = (dist >= 0) & (dist < g.sponge)
             prof[inside] = dmax * ((g.sponge - dist[inside]) / g.sponge) ** 2
             prof[dist < 0] = dmax
+        if self.free_surface:
+            # 自由表面上方不设吸收层，避免把地表反射吃掉
+            pz[: self.pad + g.sponge] = 0.0
         self._damp = np.exp(-(px[:, None] + pz[None, :]) * self.dt)
+
+    def _apply_free_surface(self, vx, vz, sxx, szz, sxz) -> None:
+        """平自由表面：σzz=σxz=0，地表以上场量为零。
+
+        真正逐列起伏自由表面需要改变每列差分模板；当前先提供平自由表面
+        + 高程静校正/浮动 datum 的组合（见 efwi/topography.py）。
+        """
+        j0 = self.pad
+        vx[:, :j0] = 0.0
+        vz[:, :j0] = 0.0
+        sxx[:, :j0] = 0.0
+        szz[:, :j0] = 0.0
+        sxz[:, :j0] = 0.0
+        szz[:, j0] = 0.0
+        sxz[:, j0] = 0.0
 
     # ------------------------------------------------------------------
     # 存储
@@ -339,6 +359,8 @@ class Elastic2DOperator:
             )
             if hessian:
                 kernels.accumulate_theta_hessian(exx_out, ezz_out, self.dt, htheta)
+            if self.free_surface:
+                self._apply_free_surface(vx, vz, sxx, szz, sxz)
             if record:
                 kernels.record_data(
                     vx, vz, self._rix, self._rjx, self._rwx,
@@ -523,6 +545,8 @@ class Elastic2DOperator:
             saxx, saxx2 = saxx2, saxx
             sazz, sazz2 = sazz2, sazz
             saxz, saxz2 = saxz2, saxz
+            if self.free_surface:
+                self._apply_free_surface(vax, vaz, saxx, sazz, saxz)
 
         g_phys, h_phys = self._physical_native(g, shot.hessian)
         return ShotGradient(
@@ -678,6 +702,8 @@ class Elastic2DOperator:
                 self.dt, self.dx, self.dz, exx, ezz, exz,
                 scratch, scratch, scratch, scratch, 0,
             )
+            if self.free_surface:
+                self._apply_free_surface(vx, vz, sxx, szz, sxz)
             if n % stride == 0:
                 k = n // stride
                 if kind == "p":
@@ -750,6 +776,8 @@ class Elastic2DOperator:
             saxx, saxx2 = saxx2, saxx
             sazz, sazz2 = sazz2, sazz
             saxz, saxz2 = saxz2, saxz
+            if self.free_surface:
+                self._apply_free_surface(vax, vaz, saxx, sazz, saxz)
 
         if imaging == "source_normalized":
             image = image / (illum + eps * max(float(np.max(illum)), 1e-30))
@@ -771,4 +799,5 @@ class Elastic2DOperator:
             "vmax": self.vmax,
             "dtype": str(self.dtype),
             "storage_mb": self.storage_mb,
+            "free_surface": self.free_surface,
         }
