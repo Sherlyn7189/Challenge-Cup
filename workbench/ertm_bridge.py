@@ -132,6 +132,7 @@ class ErtmBridge(QObject):
     lastRunChanged = Signal()
     realDataChanged = Signal()
     shotInfoChanged = Signal()
+    qChanged = Signal()
     selectionChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -147,6 +148,8 @@ class ErtmBridge(QObject):
         self._environment: dict[str, Any] = {}
         self._real_data: dict[str, Any] = {}
         self._shot_info: dict[str, Any] = {}
+        self._q: dict[str, Any] = {}
+        self._q_previews: dict[str, str] = {}
         self._log = ""
         self._code = ""
         self._code_file = ""
@@ -269,6 +272,14 @@ class ErtmBridge(QObject):
     def shotInfo(self) -> dict[str, Any]:
         return self._shot_info
 
+    @Property("QVariantMap", notify=qChanged)
+    def q(self) -> dict[str, Any]:
+        return self._q
+
+    @Property("QVariantMap", notify=qChanged)
+    def qPreviews(self) -> dict[str, str]:
+        return self._q_previews
+
     @Property(str, notify=codeChanged)
     def code(self) -> str:
         return self._code
@@ -337,6 +348,7 @@ class ErtmBridge(QObject):
             self._load_metrics_and_artifacts()
             self._load_environment()
             self._load_real_data()
+            self._load_q()
             self._generate_previews()
             if not self._code:
                 self.loadSource("ertm/solver.py")
@@ -364,6 +376,7 @@ class ErtmBridge(QObject):
         self.lastRunChanged.emit()
         self.realDataChanged.emit()
         self.shotInfoChanged.emit()
+        self.qChanged.emit()
 
     @Slot(str)
     def loadSource(self, relative: str) -> None:
@@ -396,7 +409,15 @@ class ErtmBridge(QObject):
 
     @Slot()
     def runPipeline(self) -> None:
-        """调用项目虚拟环境运行 main.py。"""
+        """运行默认 ERTM 流水线。"""
+        self._start_pipeline("config/default.json", "ERTM 流水线")
+
+    @Slot()
+    def runQComp(self) -> None:
+        """运行含 Q 衰减、补偿与 QC 对比的黏声 RTM 配置。"""
+        self._start_pipeline("config/viscoacoustic.json", "Q 补偿")
+
+    def _start_pipeline(self, config_path: str, label: str) -> None:
         if self._root is None:
             self._append_log("[UI] 未找到 ERTM 项目，无法运行。")
             return
@@ -421,10 +442,12 @@ class ErtmBridge(QObject):
         self._set_running(True)
         self._progress = 0.0
         self.progressChanged.emit()
-        self._run_state = "运行中"
+        self._run_state = f"运行中 · {label}"
         self.runStateChanged.emit()
-        self._append_log("[UI] 启动 ERTM 流水线: main.py --config config/default.json")
-        self._process.start(str(python), ["main.py", "--config", "config/default.json", "--log-level", "INFO"])
+        self._append_log(f"[UI] 启动 {label}: main.py --config {config_path}")
+        self._process.start(
+            str(python), ["main.py", "--config", config_path, "--log-level", "INFO"]
+        )
         self._ticker.start()
 
     @Slot()
@@ -740,6 +763,87 @@ class ErtmBridge(QObject):
             "text": f"已发现 {len(files)} 个数据文件" if files else "实测资料未导入",
             "dir": str(data_dir),
         }
+
+    # ── 内部：Q 补偿数据 ────────────────────────────────────────
+    def _load_q(self) -> None:
+        assert self._root is not None
+        qcfg = self._read_json(self._root / "config" / "viscoacoustic.json").get("q", {})
+        report = self._read_json(
+            self._root / "output" / "viscoacoustic" / "reports" / "run_report.json"
+        )
+        q_report_path = self._root / "output" / "viscoacoustic" / "reports" / "run_report.json"
+        q_last_run = "—"
+        if q_report_path.is_file():
+            q_last_run = datetime.fromtimestamp(q_report_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        q_params = report.get("q", {}) if isinstance(report, dict) else {}
+        image_meta = report.get("image_meta", {}) if isinstance(report, dict) else {}
+        q_meta = image_meta.get("q", {}) if isinstance(image_meta, dict) else {}
+        comparison = report.get("q_comparison", {}) if isinstance(report, dict) else {}
+        if not comparison:
+            comparison = self._read_json(
+                self._root / "output" / "viscoacoustic" / "images" / "q_compare.json"
+            )
+        q_model = self._load_npz(
+            self._root / "output" / "viscoacoustic" / "models" / "q_model.npz"
+        )
+        qp = q_model.get("qp")
+        qs = q_model.get("qs")
+
+        previews: dict[str, str] = {}
+        if qp is not None:
+            previews["qp"] = self._save_preview("q_qp", self._render_model(qp))
+        if qs is not None:
+            previews["qs"] = self._save_preview("q_qs", self._render_model(qs))
+        image = self._load_npz(
+            self._root / "output" / "viscoacoustic" / "images" / "image_pp.npz"
+        ).get("image")
+        if image is not None:
+            arr = np.asarray(image, dtype=np.float64)
+            peak = float(np.percentile(np.abs(arr), 99.0)) or float(np.nanmax(np.abs(arr))) or 1.0
+            previews["image"] = self._save_preview(
+                "q_image", _qimage(_seismic_rgb(arr, peak), (640, 460))
+            )
+        compare_png = self._root / "output" / "viscoacoustic" / "images" / "q_compare.png"
+        if compare_png.is_file():
+            previews["compare"] = compare_png.as_uri()
+
+        alphas = q_meta.get("alpha_mechanisms", q_params.get("alpha_mechanisms", []))
+        if not isinstance(alphas, list):
+            alphas = []
+        self._q = {
+            "available": bool(qp is not None or qs is not None),
+            "enabled": bool(q_params.get("enabled", qcfg.get("enabled", False))),
+            "model": str(q_params.get("model", qcfg.get("model", "gsls"))),
+            "alpha_c": self._as_float(q_params.get("alpha_c", qcfg.get("alpha_c")), 0.0),
+            "f_ref": self._as_float(q_params.get("f_ref", qcfg.get("f_ref")), 30.0),
+            "gain_cap": self._as_float(q_params.get("gain_cap", qcfg.get("gain_cap")), 30.0),
+            "n_mechanisms": int(self._as_float(q_params.get("n_mechanisms", qcfg.get("n_mechanisms")), 3)),
+            "f_max": self._as_float(q_params.get("f_max", qcfg.get("f_max")), 60.0),
+            "gain_budget_db": self._as_float(
+                q_params.get("gain_budget_db", qcfg.get("gain_budget_db")), 40.0
+            ),
+            "compare": bool(q_params.get("compare", qcfg.get("compare", False))),
+            "q_fit_error": self._as_float(q_meta.get("q_fit_error"), 0.0),
+            "clipped_steps": int(self._as_float(q_meta.get("clipped_steps"), 0)),
+            "lowpass_steps": int(self._as_float(q_meta.get("lowpass_steps"), 0)),
+            "alpha_mechanisms": [self._as_float(v) for v in alphas],
+            "band_gain": self._as_float(comparison.get("band_amplitude_gain"), 0.0),
+            "band_top": self._as_float(comparison.get("band_top_m"), 0.0),
+            "band_bottom": self._as_float(comparison.get("band_bottom_m"), 0.0),
+            "baseline_rms": self._as_float(comparison.get("baseline_band_rms"), 0.0),
+            "compensated_rms": self._as_float(comparison.get("compensated_band_rms"), 0.0),
+            "baseline_ratio": self._as_float(comparison.get("baseline_deep_shallow_ratio"), 0.0),
+            "compensated_ratio": self._as_float(comparison.get("compensated_deep_shallow_ratio"), 0.0),
+            "difference_rms": self._as_float(comparison.get("difference_rms"), 0.0),
+            "correlation": self._as_float(comparison.get("correlation"), 0.0),
+            "last_run": q_last_run,
+            "elapsed": self._as_float(report.get("elapsed_s"), 0.0),
+            "qp_min": float(np.nanmin(qp)) if qp is not None else 0.0,
+            "qp_max": float(np.nanmax(qp)) if qp is not None else 0.0,
+            "qs_min": float(np.nanmin(qs)) if qs is not None else 0.0,
+            "qs_max": float(np.nanmax(qs)) if qs is not None else 0.0,
+        }
+        self._q_previews = previews
 
     # ── 内部：预览图生成 ────────────────────────────────────────
     def _generate_previews(self) -> None:

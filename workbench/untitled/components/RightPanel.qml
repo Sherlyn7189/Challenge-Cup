@@ -8,6 +8,28 @@ Item {
     property var backend: null
     property var section: ({})
 
+    readonly property var q: panel.backend ? panel.backend.q : ({})
+    readonly property bool isQ: panel.section.title === "Q 补偿"
+
+    function qnum(v, d) {
+        var n = Number(v);
+        return isFinite(n) ? n.toFixed(d === undefined ? 2 : d) : "—";
+    }
+
+    readonly property var acceptanceRows: panel.isQ
+        ? [
+            { "label": "频带振幅增益", "target": panel.qnum(panel.q.band_gain, 2) + "×", "state": "已补偿", "color": "#31d98a" },
+            { "label": "深 / 浅能量比", "target": panel.qnum(panel.q.baseline_ratio, 2) + " → " + panel.qnum(panel.q.compensated_ratio, 2), "state": "改善", "color": "#31d98a" },
+            { "label": "相关系数", "target": panel.qnum(panel.q.correlation, 3), "state": "QC", "color": "#8fe3ff" },
+            { "label": "限幅 / 低通步", "target": panel.qnum(panel.q.clipped_steps, 0) + " / " + panel.qnum(panel.q.lowpass_steps, 0), "state": "稳定", "color": "#31d98a" }
+        ]
+        : [
+            { "label": "走时误差", "target": "< 1%", "state": "待验证", "color": "#efa63f" },
+            { "label": "界面归位", "target": "< 1 网格", "state": "待验证", "color": "#efa63f" },
+            { "label": "CPML 反射", "target": "< -60 dB", "state": "待验证", "color": "#efa63f" },
+            { "label": "伴随点积", "target": "< 1e-10", "state": "待接入", "color": "#3c6b83" }
+        ]
+
     CardBackground { anchors.fill: parent }
 
     readonly property string stateColor: !panel.backend ? "#6f93aa"
@@ -212,7 +234,9 @@ Item {
         Text {
             x: 14
             y: 84
-            text: panel.backend ? panel.backend.lastRun : "—"
+            text: panel.backend
+                  ? (panel.isQ ? (panel.q.last_run || "—") : panel.backend.lastRun)
+                  : "—"
             color: "#a9c6d9"
             font.family: Theme.fontMono
             font.pixelSize: 8
@@ -220,7 +244,10 @@ Item {
         Text {
             x: parent.width - 14 - width
             y: 84
-            text: panel.backend ? panel.backend.elapsed.toFixed(2) + " s" : "—"
+            text: panel.backend
+                  ? (panel.isQ ? Number(panel.q.elapsed || 0).toFixed(2) + " s"
+                                : panel.backend.elapsed.toFixed(2) + " s")
+                  : "—"
             color: "#8fe3ff"
             font.family: Theme.fontMono
             font.pixelSize: 8
@@ -278,7 +305,7 @@ Item {
         Text {
             x: 14
             y: 0
-            text: "验收指标"
+            text: panel.isQ ? "Q 补偿 QC" : "验收指标"
             color: "#7b9fb5"
             font.family: Theme.fontUi
             font.pixelSize: 9
@@ -289,19 +316,14 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: 14
             y: 2
-            text: "算法接入后自动刷新"
+            text: panel.isQ ? "q_compare.json" : "算法接入后自动刷新"
             color: "#3f6479"
             font.family: Theme.fontUi
             font.pixelSize: 7
         }
 
         Repeater {
-            model: [
-                { "label": "走时误差", "target": "< 1%", "state": "待验证", "color": "#efa63f" },
-                { "label": "界面归位", "target": "< 1 网格", "state": "待验证", "color": "#efa63f" },
-                { "label": "CPML 反射", "target": "< -60 dB", "state": "待验证", "color": "#efa63f" },
-                { "label": "伴随点积", "target": "< 1e-10", "state": "待接入", "color": "#3c6b83" }
-            ]
+            model: panel.acceptanceRows
 
             Item {
                 x: 14

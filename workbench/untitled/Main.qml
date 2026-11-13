@@ -15,6 +15,7 @@ Window {
     color: Theme.bg0
 
     property int selectedIndex: 0
+    property bool entered: false
 
     readonly property var sections: [
         {
@@ -28,10 +29,10 @@ Window {
         {
             "eyebrow": "SECTION 02 · IMAGING",
             "title": "典型模型对比",
-            "desc": "对比溶洞、倾斜裂缝、交叉裂缝三类典型模型的成像剖面，检查异常体归位与横向分辨率。",
+            "desc": "溶洞模型已接入原始 Vp 图件、ERTM 多分量成像与 Kirchhoff 深度域参考图；裂缝类仍为界面预设。",
             "formula": "I(x,z) = Σs ∫ Ws(x,z,t) · Wr(x,z,t) dt",
-            "tag": "待接入",
-            "tagColor": "#efa63f"
+            "tag": "已接入",
+            "tagColor": "#31d98a"
         },
         {
             "eyebrow": "SECTION 03 · REAL DATA",
@@ -44,10 +45,10 @@ Window {
         {
             "eyebrow": "SECTION 04 · Q COMP",
             "title": "Q 补偿",
-            "desc": "GSLS 离散伴随天然产生增益，需做时变限幅、低通与补偿强度控制；当前模块待算法接入。",
-            "formula": "G(t) = exp(π f t / Q) ≤ Gmax",
-            "tag": "待接入",
-            "tagColor": "#efa63f"
+            "desc": "GSLS 黏声引擎：接收侧补偿、增益上限与时变低通，输出补偿前后 QC 对比、Q 模型与增益曲线；可直接运行 viscoacoustic 配置。",
+            "formula": "G(t) = exp(π f t / Q) ≤ Gcap",
+            "tag": "已接入",
+            "tagColor": "#31d98a"
         },
         {
             "eyebrow": "SECTION 05 · SOURCE",
@@ -121,6 +122,9 @@ Window {
         id: root
         anchors.fill: parent
         anchors.margins: 10
+        opacity: window.entered ? 1.0 : 0.0
+        enabled: window.entered
+        Behavior on opacity { NumberAnimation { duration: 350; easing.type: Easing.OutCubic } }
 
         // ── 左侧导航 ────────────────────────────────────────────
         Sidebar {
@@ -316,12 +320,23 @@ Window {
         }
     }
 
+    SplashScreen {
+        id: splash
+        anchors.fill: parent
+        z: 1000
+        visible: !window.entered
+        backend: bridge
+        onFinished: window.entered = true
+    }
+
     Shortcut {
         sequences: [ "F5" ]
+        enabled: window.entered
         onActivated: if (bridge) bridge.runPipeline()
     }
     Shortcut {
         sequence: "Ctrl+R"
+        enabled: window.entered
         onActivated: if (bridge) bridge.reload()
     }
 }

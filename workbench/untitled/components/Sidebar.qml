@@ -162,7 +162,7 @@ Item {
             step: 2
             title: "典型模型对比"
             subtitle: "cave · fracture · cross"
-            state: "warn"
+            state: "ready"
             selected: sidebar.selectedIndex === 1
             onClicked: sidebar.select(1)
         }
@@ -180,7 +180,7 @@ Item {
             step: 4
             title: "Q 补偿"
             subtitle: "GSLS · gain control"
-            state: "warn"
+            state: "ready"
             selected: sidebar.selectedIndex === 3
             onClicked: sidebar.select(3)
         }
@@ -218,7 +218,7 @@ Item {
                 { "name": "差分算子", "state": "待接入", "color": "#efa63f" },
                 { "name": "正 / 反传延拓", "state": "占位", "color": "#efa63f" },
                 { "name": "PP / PS 成像", "state": "占位", "color": "#efa63f" },
-                { "name": "Q 补偿", "state": "待接入", "color": "#3c6b83" }
+                { "name": "Q 补偿", "state": "已实现", "color": "#31d98a" }
             ]
 
             Item {

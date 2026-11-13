@@ -13,6 +13,7 @@ Rectangle {
     property string placeholderNote: ""
     property var info: []
     property string footer: ""
+    property int imageHeight: 190
 
     radius: 7
     color: "#071a2a"
@@ -61,7 +62,7 @@ Rectangle {
         x: 6
         y: 34
         width: parent.width - 12
-        height: 190
+        height: pane.imageHeight
         radius: 4
         color: "#04111c"
         border.width: 1
@@ -156,7 +157,8 @@ Rectangle {
     Column {
         id: infoList
         x: 10
-        y: 232
+        anchors.top: imageBox.bottom
+        anchors.topMargin: 8
         width: parent.width - 20
         spacing: 0
 
