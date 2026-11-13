@@ -155,16 +155,105 @@ def _read_headers(path: Path, options: SegYReadOptions) -> tuple[np.ndarray, np.
     return data, (sources, groups, group_y, field), dt
 
 
+def expand_segy_paths(path: str | Path) -> list[Path]:
+    """把"文件 / 目录 / 通配符"展开成按名称排序的文件列表。
+
+    真实项目常见"一炮一文件"或"一条测线一目录"，因此输入允许
+    ``data/*.sgy``、``data/line1`` 这类写法。
+    """
+    import glob as glob_module
+
+    text = str(path)
+    if any(char in text for char in "*?["):
+        matches = sorted(Path(item) for item in glob_module.glob(text))
+        files = [item for item in matches if item.is_file()]
+        if not files:
+            raise DataError(f"通配符没有匹配到 SEG-Y 文件: {text}")
+        return files
+    candidate = Path(text)
+    if candidate.is_dir():
+        files = sorted(
+            item
+            for item in candidate.iterdir()
+            if item.is_file() and item.suffix.lower() in {".sgy", ".segy"}
+        )
+        if not files:
+            raise DataError(f"目录中没有 SEG-Y 文件: {candidate}")
+        return files
+    if not candidate.is_file():
+        raise DataError(f"SEG-Y 文件不存在: {candidate}")
+    return [candidate]
+
+
+def summarize_segy(path: str | Path) -> dict[str, Any]:
+    """只读道头，给出 QC 摘要（不加载道数据，适合先检查大文件）。
+
+    返回文件数、道数、采样、炮数、坐标范围与偏移距范围，用于在正式成像前
+    判断"数据是否可用、坐标是否合理、dt 是否被写错"。
+    """
+    segy = _require_segyio()
+    files = expand_segy_paths(path)
+    total_traces = 0
+    total_shots = 0
+    dt_set: set[float] = set()
+    ns_set: set[int] = set()
+    src_min = grp_min = float("inf")
+    src_max = grp_max = float("-inf")
+    offset_min = float("inf")
+    offset_max = float("-inf")
+    for file_path in files:
+        with segy.open(str(file_path), "r", ignore_geometry=True) as handle:
+            ns = int(handle.bin[segy.BinField.Samples])
+            interval = int(handle.bin[segy.BinField.Interval]) or 1000
+            n_trace = int(handle.tracecount)
+            sources = set()
+            for index in range(n_trace):
+                header = handle.header[index]
+                scalar = _header_int(header, segy.TraceField.SourceGroupScalar)
+                sx = _apply_scalar(_header_int(header, segy.TraceField.SourceX), scalar)
+                gx = _apply_scalar(_header_int(header, segy.TraceField.GroupX), scalar)
+                offset = abs(_header_int(header, segy.TraceField.offset))
+                sources.add(sx)
+                src_min, src_max = min(src_min, sx), max(src_max, sx)
+                grp_min, grp_max = min(grp_min, gx), max(grp_max, gx)
+                offset_min, offset_max = min(offset_min, offset), max(offset_max, offset)
+            total_traces += n_trace
+            total_shots += len(sources)
+            dt_set.add(interval * 1e-6)
+            ns_set.add(ns)
+    return {
+        "files": [str(item) for item in files],
+        "n_files": len(files),
+        "n_traces": int(total_traces),
+        "n_shots": int(total_shots),
+        "dt": sorted(dt_set)[0] if len(dt_set) == 1 else sorted(dt_set),
+        "ns": sorted(ns_set)[0] if len(ns_set) == 1 else sorted(ns_set),
+        "source_x_range": [float(src_min), float(src_max)],
+        "receiver_x_range": [float(grp_min), float(grp_max)],
+        "offset_range": [float(offset_min), float(offset_max)],
+    }
+
+
 def read_segy_shots(
     path: str | Path,
     options: SegYReadOptions | None = None,
 ) -> list[ShotRecord]:
-    """把一个 SEG-Y 文件读成若干炮记录（按炮分组）。"""
+    """读取 SEG-Y（文件 / 目录 / 通配符），返回按炮分组的记录列表。"""
     opts = options or SegYReadOptions()
     opts.validate()
-    file_path = Path(path)
-    if not file_path.is_file():
-        raise DataError(f"SEG-Y 文件不存在: {file_path}")
+    files = expand_segy_paths(path)
+    shots: list[ShotRecord] = []
+    for file_path in files:
+        shots.extend(_read_single_segy(file_path, opts))
+    if opts.shot_limit:
+        shots = shots[: int(opts.shot_limit)]
+    if len(files) > 1:
+        logger.info("多文件 SEG-Y 读取: %d 个文件, 共 %d 炮", len(files), len(shots))
+    return shots
+
+
+def _read_single_segy(file_path: Path, opts: SegYReadOptions) -> list[ShotRecord]:
+    """读单个 SEG-Y 文件（路径已校验）。"""
 
     data, headers, dt = _read_headers(file_path, opts)
     sources, groups, group_y, field = headers

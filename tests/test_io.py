@@ -76,6 +76,24 @@ class TestSegyRoundTrip(unittest.TestCase):
         for record in grouped:
             self.assertEqual(record.receivers.nrec, shots[0].receivers.nrec)
 
+    def test_directory_and_glob_input(self) -> None:
+        shots = [make_shot(100.0, nrec=5), make_shot(200.0, nrec=5)]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "line1"
+            directory.mkdir()
+            segy.write_segy_shot(shots[0], directory / "shot_001.sgy")
+            segy.write_segy_shot(shots[1], directory / "shot_002.sgy")
+            by_dir = segy.read_segy_shots(directory)
+            by_glob = segy.read_segy_shots(str(directory / "*.sgy"))
+            summary = segy.summarize_segy(directory)
+        self.assertEqual(len(by_dir), 2)
+        self.assertEqual(len(by_glob), 2)
+        self.assertEqual(sorted(round(float(r.source.x)) for r in by_dir), [100, 200])
+        self.assertEqual(summary["n_files"], 2)
+        self.assertEqual(summary["n_shots"], 2)
+        self.assertEqual(summary["n_traces"], 10)
+        self.assertAlmostEqual(summary["dt"], shots[0].dt, places=9)
+
     def test_image_roundtrip(self) -> None:
         grid = GridSpec(nx=13, nz=17, dx=10.0, dz=5.0)
         image = ImageResult(

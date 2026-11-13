@@ -132,9 +132,13 @@ SeismicProjectERTM/
 |---|---|
 | 采样 | 二进制头 `Interval`（微秒），**不依赖** `segyio.samples` 标签 |
 | 坐标 | 道头 `SourceX/GroupX`（`GroupY` 可当井中深度），按 `SourceGroupScalar` 换算（正乘负除） |
+| 路径 | 文件、目录或通配符（`data/*.sgy`），多文件按名称排序后依次读取 |
 | 分组 | `group_by="source"`（按 SourceX，默认）/ `"field_record"` / `"file"` |
 | 多分量 | `component_files={"p": ..., "vx": ..., "vz": ...}`，按炮序对齐合并 |
 | 深度 | 地面排列 `receiver_depth` 常数；井中可设 `receiver_depth_from="group_y"` |
+
+QC：`summarize_segy` 只读道头给出文件数/道数/炮数/采样/坐标范围/偏移距范围，
+正式成像前可先跑一遍确认数据可用。
 
 写出：`write_segy_shot`（单炮）、`write_segy_shots`（多炮合一）、
 `write_segy_image`（深度域图像，道=x、样点=z）——读回往返有测试保证。
