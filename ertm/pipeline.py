@@ -228,25 +228,41 @@ class ERTMPipeline:
             if figure is not None:
                 artifacts.append(figure)
 
-        # 3) 观测系统
-        receivers = _build_receivers(config)
-        sources = _build_sources(config)
-        logger.info("观测系统: %d 炮 × %d 道", len(sources), receivers.nrec)
-
-        # 4) 正演 + 采集效应
-        shots: list[ShotRecord] = []
-        for index, source in enumerate(sources):
-            try:
-                shot = self.solver.forward(
-                    model,
-                    source,
-                    receivers,
-                    components=self._record_components(),
-                )
-                shot = self._apply_acquisition(shot, model, index)
-            except Exception as exc:
-                raise PipelineError(f"第 {index} 炮正演阶段失败: {exc}") from exc
-            shots.append(shot)
+        # 3) 观测系统 / 数据输入
+        if config.input.format == "segy":
+            shots = self._load_segy_shots()
+            if not shots:
+                raise PipelineError("SEG-Y 输入没有读到任何炮记录")
+            receivers = shots[0].receivers
+            sources = [shot.source for shot in shots]
+            logger.info(
+                "观测系统（SEG-Y 输入）: %d 炮 × %d 道, 来源=%s",
+                len(shots),
+                receivers.nrec,
+                config.input.segy_path or list(config.input.component_files),
+            )
+            shots = [
+                self._apply_acquisition(shot, model, index)
+                for index, shot in enumerate(shots)
+            ]
+        else:
+            receivers = _build_receivers(config)
+            sources = _build_sources(config)
+            logger.info("观测系统: %d 炮 × %d 道", len(sources), receivers.nrec)
+            # 4) 正演 + 采集效应
+            shots = []
+            for index, source in enumerate(sources):
+                try:
+                    shot = self.solver.forward(
+                        model,
+                        source,
+                        receivers,
+                        components=self._record_components(),
+                    )
+                    shot = self._apply_acquisition(shot, model, index)
+                except Exception as exc:
+                    raise PipelineError(f"第 {index} 炮正演阶段失败: {exc}") from exc
+                shots.append(shot)
 
         if config.output.save_data:
             artifacts.append(self.data_store.save_shot(shots[0], "shot"))
@@ -277,6 +293,15 @@ class ERTMPipeline:
 
         if config.output.save_data:
             artifacts.append(self.data_store.save_image(image, f"image_{image.mode}"))
+        if config.output.segy_image:
+            from .segy import write_segy_image
+
+            artifacts.append(
+                write_segy_image(
+                    image,
+                    self.data_store.dirs["images"] / f"image_{image.mode}.sgy",
+                )
+            )
         if config.output.save_figures:
             figure = self.visualizer.plot_image(image, f"image_{image.mode}")
             if figure is not None:
@@ -315,6 +340,12 @@ class ERTMPipeline:
                 "record_dt": config.acquisition.record_dt,
                 "components": list(self._record_components()),
                 "direct_mute": bool(config.acquisition.mute_direct),
+            },
+            "input": {
+                "format": config.input.format,
+                "segy_path": config.input.segy_path,
+                "component_files": dict(config.input.component_files),
+                "n_shots_loaded": len(shots),
             },
             "shot_meta": shots[0].meta,
             "image_meta": image.meta,
@@ -366,7 +397,12 @@ class ERTMPipeline:
             rotation_deg=float(config.acquisition.rotation_deg),
             mute=bool(config.acquisition.mute_direct),
         )
-        if config.q.enabled and config.q.apply_attenuation and config.q.model == "filter":
+        if (
+            config.q.enabled
+            and config.q.apply_attenuation
+            and config.q.model == "filter"
+            and config.input.format == "synthetic"
+        ):
             q_value = float(np.mean(model.qp))
             processed.data = attenuate_record(
                 np.asarray(processed.data, dtype=np.float64),
@@ -389,6 +425,30 @@ class ERTMPipeline:
             processed.meta = {**processed.meta, "q_attenuated": True}
         processed.meta = {**processed.meta, "shot_index": index}
         return processed
+
+    def _load_segy_shots(self) -> list[ShotRecord]:
+        """按 ``input`` 配置读取 SEG-Y（单文件或多分量多文件）。"""
+        from .segy import SegYReadOptions, read_segy_components, read_segy_shots
+
+        cfg = self.config.input
+        options = SegYReadOptions(
+            component=cfg.component,
+            group_by=cfg.group_by,
+            receiver_depth=cfg.receiver_depth,
+            source_depth=cfg.source_depth,
+            receiver_depth_from=cfg.receiver_depth_from,
+            coordinate_scalar=cfg.coordinate_scalar,
+            shot_limit=cfg.shot_limit,
+            sort_by_offset=cfg.sort_by_offset,
+            f0=float(self.config.source.f0),
+            delay=float(self.config.source.delay),
+        )
+        try:
+            if cfg.component_files:
+                return read_segy_components(dict(cfg.component_files), options)
+            return read_segy_shots(cfg.segy_path, options)
+        except Exception as exc:
+            raise PipelineError(f"SEG-Y 读取失败: {exc}") from exc
 
     def _should_compare_q(self) -> bool:
         config = self.config

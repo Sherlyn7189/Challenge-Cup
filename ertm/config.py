@@ -408,10 +408,46 @@ class QConfig:
 
 
 @dataclass(frozen=True)
+class InputConfig:
+    """数据输入方式。
+
+    ``synthetic``（默认）由配置+正演生成记录；``segy`` 从 SEG-Y 读取实测资料，
+    速度模型仍来自 ``model`` 段（真实项目应换成层析/反演模型文件）。
+    ``component_files`` 用于多分量（每分量一个文件），如
+    ``{"p": "vsp_p.sgy", "vx": "vsp_x.sgy", "vz": "vsp_z.sgy"}``。
+    """
+
+    format: str = "synthetic"
+    segy_path: str = ""
+    component_files: dict[str, str] = field(default_factory=dict)
+    component: str = "p"
+    group_by: str = "source"
+    receiver_depth: float = 0.0
+    source_depth: float = 0.0
+    receiver_depth_from: str = "constant"
+    coordinate_scalar: int | None = None
+    shot_limit: int = 0
+    sort_by_offset: bool = True
+
+    def validate(self) -> None:
+        if self.format not in {"synthetic", "segy"}:
+            raise ConfigError(f"input.format 必须是 synthetic/segy，当前 {self.format!r}")
+        if self.group_by not in {"source", "field_record", "file"}:
+            raise ConfigError("input.group_by 必须是 source/field_record/file")
+        if self.receiver_depth_from not in {"constant", "group_y"}:
+            raise ConfigError("input.receiver_depth_from 必须是 constant/group_y")
+        if self.shot_limit < 0:
+            raise ConfigError("input.shot_limit 不能为负")
+        if self.format == "segy" and not self.segy_path and not self.component_files:
+            raise ConfigError("input.format='segy' 时必须给出 segy_path 或 component_files")
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     root: str = "output"
     save_figures: bool = True
     save_data: bool = True
+    segy_image: bool = True
 
     def validate(self) -> None:
         if not str(self.root).strip():
@@ -442,6 +478,7 @@ class AppConfig:
     acquisition: AcquisitionConfig = field(default_factory=AcquisitionConfig)
     solver: SolverConfig = field(default_factory=SolverConfig)
     imaging: ImagingConfig = field(default_factory=ImagingConfig)
+    input: InputConfig = field(default_factory=InputConfig)
     q: QConfig = field(default_factory=QConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -455,6 +492,7 @@ class AppConfig:
         self.acquisition.validate()
         self.solver.validate()
         self.imaging.validate()
+        self.input.validate()
         self.q.validate()
         self.output.validate()
         self.logging.validate()
@@ -511,6 +549,7 @@ class AppConfig:
             acquisition=AcquisitionConfig(**data.get("acquisition", {})),
             solver=SolverConfig(**data.get("solver", {})),
             imaging=ImagingConfig(**data.get("imaging", {})),
+            input=InputConfig(**data.get("input", {})),
             q=QConfig(**data.get("q", {})),
             output=OutputConfig(**data.get("output", {})),
             logging=LoggingConfig(**data.get("logging", {})),

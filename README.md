@@ -45,6 +45,7 @@ output/
 ├── images/model.png            # 模型、炮集、指标图
 ├── images/shot.png
 ├── images/metrics.png
+├── images/image_pp.sgy       # 深度域成像的 SEG-Y 导出（道=x，样点=z）
 ├── images/q_compare.png        # 仅 q.compare=true：补偿前/后/差值
 ├── images/q_gain.png           # 仅 q.compare=true：各机制补偿强度
 ├── models/q_model.npz/.png     # 仅 q.compare=true：Qp/Qs 模型
@@ -72,12 +73,14 @@ SeismicProjectERTM/
 │   ├── imaging.py              # RTM 装配：检查点、成像条件、归一化、后处理
 │   ├── preprocess.py           # COG→CSG 旋转、时间重采样、直达波切除
 │   ├── qcomp.py                # Q 衰减频响与反传侧补偿（时变增益+低通）
+│   ├── segy.py                 # SEG-Y 读写（炮集分组、多分量、图像导出）
 │   ├── models.py               # 层状背景 + 溶洞/裂缝带/断层
 │   ├── pipeline.py             # 多炮正演→成像→叠加→评价→输出
 │   ├── evaluation.py           # 统计指标 + 成像质量代理指标
 │   ├── data.py / visualization.py / logging_utils.py / exceptions.py
 │   └── config.py / types.py / interfaces.py / diagnostics.py
 ├── tests/
+│   ├── test_io.py              # SEG-Y 往返、多炮分组、SEG-Y 输入流水线
 │   ├── test_structure.py       # 接口/契约/IO/流水线
 │   └── test_rtm.py             # 数值正确性与成像质量
 └── docs/                       # 需求与技术方案（第一、二阶段）
@@ -117,7 +120,30 @@ SeismicProjectERTM/
 3. **直达波切除**：`t_mute = delay + 1.2/f0 + 1.05·|x − x_s|/v_ref`，余弦过渡；
 4. **首尾 taper**：压制记录截断引起的边界反射。
 
-### 4.4 Q 衰减与补偿（`qcomp.py` + `viscoelastic.py`）
+### 4.4 输入输出与数据契约（`segy.py`、`data.py`）
+
+- **合成数据**：`input.format="synthetic"`（默认），由模型 + 正演生成记录；
+- **实测数据**：`input.format="segy"`，直接读 SEG-Y 作为炮记录，速度模型仍来自
+  `model` 段（真实项目应替换为层析/反演模型）。
+
+读取规则（`segy.py`）：
+
+| 项目 | 约定 |
+|---|---|
+| 采样 | 二进制头 `Interval`（微秒），**不依赖** `segyio.samples` 标签 |
+| 坐标 | 道头 `SourceX/GroupX`（`GroupY` 可当井中深度），按 `SourceGroupScalar` 换算（正乘负除） |
+| 分组 | `group_by="source"`（按 SourceX，默认）/ `"field_record"` / `"file"` |
+| 多分量 | `component_files={"p": ..., "vx": ..., "vz": ...}`，按炮序对齐合并 |
+| 深度 | 地面排列 `receiver_depth` 常数；井中可设 `receiver_depth_from="group_y"` |
+
+写出：`write_segy_shot`（单炮）、`write_segy_shots`（多炮合一）、
+`write_segy_image`（深度域图像，道=x、样点=z）——读回往返有测试保证。
+
+配套脚本 `scripts/make_demo_segy.py` 会把默认模型的 3 炮写成
+`data/demo_shots.sgy`，用于验证"合成 → SEG-Y → 读取 → 成像"整条链路
+（`config/segy_demo.json`）。
+
+### 4.5 Q 衰减与补偿（`qcomp.py` + `viscoelastic.py`）
 
 两种模式，由 `q.model` 选择：
 
@@ -159,6 +185,7 @@ SeismicProjectERTM/
 | `acquisition` | `geometry, components, record_dt, rotation_deg, shots` | 观测系统、四分量、实测采样率、多炮 |
 | `solver` | `nt, dt, order, boundary, engine, npml` | 时间步、阶数、边界、声波/弹性引擎 |
 | `imaging` | `mode, condition, separation, laplacian, checkpoint_mb` | 成像条件与后处理 |
+| `input` | `format, segy_path, component_files, group_by, receiver_depth` | 数据来源（合成/SEG-Y）与读取约定 |
 | `q` | `enabled, model, alpha_c, gain_cap, n_mechanisms, amplitude_cap` | Q 模式（filter/gsls）、补偿强度与稳定化 |
 
 `dt` 必须满足 `dt ≤ 0.5/(v_max·√((C/dx)² + (C/dz)²))`；不满足时求解器
@@ -170,6 +197,8 @@ SeismicProjectERTM/
   层状模型 + 溶洞，`condition=normalized`，约 15 s 出图；
 - `config/borehole_4c.json`：井中四分量、弹性波、PP/PS 成像、Q 补偿，
   用于演示第 ②③④ 项关键技术（运行时间明显更长）；
+- `config/segy_demo.json`：SEG-Y 输入（先跑 `scripts/make_demo_segy.py` 生成
+  `data/demo_shots.sgy`），成像结果同时导出 `image_pp.sgy`；
 - `config/viscoacoustic.json`：GSLS 黏声正演 + 伴随内 Q 补偿（α_c=0.9），
   三炮、141×121 网格，约 19 s，可对照 `q.enabled=false` 观察深部振幅恢复。
 

@@ -60,6 +60,7 @@ REQUIRED_FILES = (
     "ertm/qcomp.py",
     "ertm/viscoelastic.py",
     "ertm/qc.py",
+    "ertm/segy.py",
     "ertm/data.py",
     "ertm/visualization.py",
     "ertm/evaluation.py",
@@ -68,6 +69,7 @@ REQUIRED_FILES = (
     "tests/__init__.py",
     "tests/test_structure.py",
     "tests/test_rtm.py",
+    "tests/test_io.py",
 )
 
 REQUIRED_DIRS = (
@@ -98,6 +100,7 @@ MODULES = (
     "ertm.qcomp",
     "ertm.viscoelastic",
     "ertm.qc",
+    "ertm.segy",
     "ertm.data",
     "ertm.visualization",
     "ertm.evaluation",
