@@ -28,7 +28,7 @@ from .config import (
 )
 from .data import ensure_output_dirs
 from .evaluation import BasicEvaluator
-from .models import LayeredModelBuilder
+from .models import build_model_builder
 
 
 @dataclass
@@ -197,7 +197,7 @@ def _check_components() -> list[CheckResult]:
         from .solver import build_solver
 
         config = _tiny_config(load_config())
-        model = LayeredModelBuilder().build(config)
+        model = build_model_builder(config).build(config)
         results.append(
             CheckResult("模型构建", model.shape == config.grid.shape, f"shape={model.shape}")
         )

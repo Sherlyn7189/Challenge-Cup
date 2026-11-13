@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .idea/workspace.xml
 data/*.sgy
+data/*.npz
 data/*.segy
 synthetic_section.png
 output/*

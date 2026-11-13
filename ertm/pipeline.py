@@ -33,7 +33,7 @@ from .exceptions import PipelineError
 from .imaging import build_imager
 from .interfaces import DataStore, Evaluator, ForwardSolver, Imager, ModelBuilder, Visualizer
 from .logging_utils import get_logger
-from .models import LayeredModelBuilder
+from .models import build_model_builder
 from .preprocess import prepare_shot, resample_shot
 from .qcomp import QCompensator, attenuate_record, build_compensator
 from .solver import build_solver
@@ -179,7 +179,7 @@ class ERTMPipeline:
         self.output_root = _resolve_output_root(config)
 
         self.data_store = data_store or NumpyDataStore(self.output_root)
-        self.model_builder = model_builder or LayeredModelBuilder()
+        self.model_builder = model_builder or build_model_builder(config)
         self.solver = solver or build_solver(config.solver, config.q)
         self.imager = imager or build_imager(config.imaging, config.solver, config.q)
         self.visualizer = visualizer or build_visualizer(

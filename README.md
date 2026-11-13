@@ -139,6 +139,13 @@ SeismicProjectERTM/
 写出：`write_segy_shot`（单炮）、`write_segy_shots`（多炮合一）、
 `write_segy_image`（深度域图像，道=x、样点=z）——读回往返有测试保证。
 
+**速度模型输入**：`model.source="file"` 时从 `model.file` 读取（`.npz` 或
+`.sgy`）。npz 需含 `vp`，`vs/rho/qp/qs` 可缺省；缺省字段按经验关系补齐并在
+`meta.filled` 中记录（`vs = vp·(background_vs/background_vp)`、
+`rho = 310·vp^0.25` Gardner、`Q` 取配置常数），避免"看起来是实测、其实是假设"。
+`scripts/export_velocity_model.py` 可从层状配置导出 npz 模型，
+`config/file_model_demo.json` 用文件模型跑完整流程。
+
 配套脚本 `scripts/make_demo_segy.py` 会把默认模型的 3 炮写成
 `data/demo_shots.sgy`，用于验证"合成 → SEG-Y → 读取 → 成像"整条链路
 （`config/segy_demo.json`）。
@@ -179,7 +186,7 @@ SeismicProjectERTM/
 | 段 | 字段 | 说明 |
 |---|---|---|
 | `grid` | `nx, nz, dx, dz` | 二维规则网格，单位米 |
-| `model` | `layers, anomaly` | 层状背景 + 溶洞/裂缝带/断层（`kind`, `dip`） |
+| `model` | `layers, anomaly, source, file` | 层状模型或文件模型（`source=layered/file`） |
 | `source` | `x, z, f0, delay, mechanism` | 震源位置/主频/延迟/机制（爆炸/剪切/力源） |
 | `receivers` | `count, x_start, x_end, z` | 地面排列；井中排列由 `acquisition` 决定 |
 | `acquisition` | `geometry, components, record_dt, rotation_deg, shots` | 观测系统、四分量、实测采样率、多炮 |
@@ -197,6 +204,8 @@ SeismicProjectERTM/
   层状模型 + 溶洞，`condition=normalized`，约 15 s 出图；
 - `config/borehole_4c.json`：井中四分量、弹性波、PP/PS 成像、Q 补偿，
   用于演示第 ②③④ 项关键技术（运行时间明显更长）；
+- `config/file_model_demo.json`：速度模型从 `data/velocity_model.npz` 读取
+  （先跑 `scripts/export_velocity_model.py` 生成），验证文件模型链路；
 - `config/segy_demo.json`：SEG-Y 输入（先跑 `scripts/make_demo_segy.py` 生成
   `data/demo_shots.sgy`），成像结果同时导出 `image_pp.sgy`；
 - `config/viscoacoustic.json`：GSLS 黏声正演 + 伴随内 Q 补偿（α_c=0.9），

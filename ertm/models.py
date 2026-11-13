@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from .config import AnomalyConfig, AppConfig, ModelConfig
+from .config import PROJECT_ROOT, AnomalyConfig, AppConfig, ModelConfig
 from .exceptions import ModelError
 from .logging_utils import get_logger
 from .types import ElasticModel, GridSpec
+import json
+from pathlib import Path
 
 logger = get_logger(__name__)
 
@@ -153,6 +155,158 @@ class LayeredModelBuilder:
         qs[mask] = np.float32(anomaly.qs if anomaly.qs is not None else qs[mask] * 0.50)
 
 
+# ----------------------------------------------------------------------------
+# 文件模型：从 npz / SEG-Y 读取速度模型
+# ----------------------------------------------------------------------------
+class FileModelBuilder:
+    """从文件构建速度模型（真实资料项目的主用途径）。
+
+    支持的格式：
+
+    - ``.npz``：键 ``vp``（必需）、``vs/rho/qp/qs``（可选）、``dx/dz/x0/z0``
+      或 ``meta``（与 :meth:`NumpyDataStore.save_model` 写出的格式兼容）；
+    - ``.sgy/.segy``：按 :func:`ertm.segy.read_segy_image` 读取，道 = x、
+      样点 = 深度，``Interval`` 解释为深度采样（米）。
+
+    缺失的 ``vs/rho/Q`` 按实用经验关系补齐（见 :class:`~ertm.config.ModelConfig`），
+    并在 ``meta`` 里记录补齐方式，避免"看起来是实测、其实是假设"。
+    """
+
+    name = "file-model-builder"
+
+    def build(self, config: AppConfig) -> ElasticModel:
+        cfg = config.model
+        path = Path(cfg.file).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        if not path.is_file():
+            raise ModelError(f"速度模型文件不存在: {path}")
+
+        arrays, dx, dz, x0, z0 = self._load(path, config)
+        vp = np.asarray(arrays["vp"], dtype=np.float32)
+        if vp.ndim != 2:
+            raise ModelError(f"速度模型必须是二维数组，当前 {vp.shape}")
+        shape = vp.shape
+        if not np.all(np.isfinite(vp)) or np.any(vp <= 0):
+            raise ModelError("速度模型含 NaN/Inf 或非正值")
+
+        ratio = float(cfg.vs_ratio) if cfg.vs_ratio is not None else float(
+            cfg.background_vs / cfg.background_vp
+        )
+        filled: list[str] = []
+        vs = arrays.get("vs")
+        if vs is None:
+            vs = vp * ratio
+            filled.append("vs=vp*%.3f" % ratio)
+        rho = arrays.get("rho")
+        if rho is None:
+            rho = 310.0 * np.power(vp, 0.25) if cfg.rho_from_gardner else np.full(
+                shape, cfg.background_rho
+            )
+            filled.append("rho=Gardner" if cfg.rho_from_gardner else "rho=常数")
+        qp = arrays.get("qp")
+        if qp is None:
+            qp = np.full(shape, cfg.background_qp)
+            filled.append("qp=常数")
+        qs = arrays.get("qs")
+        if qs is None:
+            qs = np.full(shape, cfg.background_qs)
+            filled.append("qs=常数")
+
+        grid = GridSpec(
+            nx=int(shape[1]),
+            nz=int(shape[0]),
+            dx=float(dx),
+            dz=float(dz),
+            x0=float(x0),
+            z0=float(z0),
+        )
+        model = ElasticModel(
+            grid=grid,
+            vp=vp,
+            vs=np.asarray(vs, dtype=np.float32),
+            rho=np.asarray(rho, dtype=np.float32),
+            qp=np.asarray(qp, dtype=np.float32),
+            qs=np.asarray(qs, dtype=np.float32),
+            name=config.project.name,
+            meta={
+                "builder": self.name,
+                "placeholder": False,
+                "file": str(path),
+                "filled": filled,
+            },
+        )
+        try:
+            model.validate()
+        except ValueError as exc:
+            raise ModelError(f"文件模型校验失败: {exc}") from exc
+        logger.info(
+            "文件模型加载完成: %s, 网格=%dx%d, dx=%.2f, dz=%.2f, 补齐=%s",
+            path.name,
+            grid.nx,
+            grid.nz,
+            grid.dx,
+            grid.dz,
+            filled or "无",
+        )
+        return model
+
+    @staticmethod
+    def _load(
+        path: Path,
+        config: AppConfig,
+    ) -> tuple[dict[str, np.ndarray], float, float, float, float]:
+        suffix = path.suffix.lower()
+        if suffix == ".npz":
+            try:
+                with np.load(path, allow_pickle=False) as data:
+                    arrays = {
+                        key: np.asarray(data[key])
+                        for key in ("vp", "vs", "rho", "qp", "qs")
+                        if key in data
+                    }
+                    dx = float(data["dx"]) if "dx" in data else float(config.grid.dx)
+                    dz = float(data["dz"]) if "dz" in data else float(config.grid.dz)
+                    x0 = float(data["x0"]) if "x0" in data else float(config.grid.x0)
+                    z0 = float(data["z0"]) if "z0" in data else float(config.grid.z0)
+                    if "meta" in data:
+                        try:
+                            meta = json.loads(str(np.asarray(data["meta"]).item()))
+                            grid_meta = meta.get("grid", {})
+                            dx = float(grid_meta.get("dx", dx))
+                            dz = float(grid_meta.get("dz", dz))
+                            x0 = float(grid_meta.get("x0", x0))
+                            z0 = float(grid_meta.get("z0", z0))
+                        except (ValueError, TypeError):
+                            pass
+            except (OSError, KeyError, ValueError) as exc:
+                raise ModelError(f"读取 npz 速度模型失败: {path}: {exc}") from exc
+            if "vp" not in arrays:
+                raise ModelError(f"npz 速度模型缺少 'vp' 键: {path}")
+            return arrays, dx, dz, x0, z0
+
+        if suffix in {".sgy", ".segy"}:
+            from .segy import read_segy_image
+
+            try:
+                vp, dz, x = read_segy_image(path)
+            except Exception as exc:
+                raise ModelError(f"读取 SEG-Y 速度模型失败: {path}: {exc}") from exc
+            dx = float(np.median(np.diff(x))) if x.size > 1 else float(config.grid.dx)
+            return {"vp": vp}, dx, dz, float(x[0]) if x.size else 0.0, 0.0
+
+        raise ModelError(
+            f"不支持的速度模型格式 {suffix!r}（支持 .npz / .sgy / .segy）: {path}"
+        )
+
+
+def build_model_builder(config: AppConfig):
+    """按 ``model.source`` 选择模型构建器。"""
+    if config.model.source == "file":
+        return FileModelBuilder()
+    return LayeredModelBuilder()
+
+
 def build_model(config: AppConfig) -> ElasticModel:
-    """模块级便捷函数，等价于 ``LayeredModelBuilder().build(config)``。"""
-    return LayeredModelBuilder().build(config)
+    """模块级便捷函数：按配置选择层状或文件模型。"""
+    return build_model_builder(config).build(config)

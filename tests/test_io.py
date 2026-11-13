@@ -24,10 +24,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from ertm import segy  # noqa: E402
 from ertm.config import InputConfig, load_config  # noqa: E402
 from ertm.diagnostics import _tiny_config  # noqa: E402
-from ertm.models import LayeredModelBuilder  # noqa: E402
+from ertm.models import FileModelBuilder, LayeredModelBuilder  # noqa: E402
 from ertm.pipeline import ERTMPipeline, _build_receivers, _build_source  # noqa: E402
 from ertm.solver import build_solver  # noqa: E402
-from ertm.types import GridSpec, ImageResult, ShotRecord  # noqa: E402
+from ertm.types import ElasticModel, GridSpec, ImageResult, ShotRecord  # noqa: E402
 
 
 def make_shot(source_x: float = 100.0, nrec: int = 11, nt: int = 64) -> ShotRecord:
@@ -91,6 +91,98 @@ class TestSegyRoundTrip(unittest.TestCase):
         self.assertAlmostEqual(dz, grid.dz, places=6)
         self.assertTrue(np.allclose(x, np.arange(grid.nx) * grid.dx, atol=1e-6))
         self.assertTrue(np.allclose(back, image.image, atol=1e-6))
+
+
+class TestModelFileInput(unittest.TestCase):
+    """速度模型文件输入：npz 与 SEG-Y 两种格式。"""
+
+    @staticmethod
+    def _config_with_model(file_path: Path, grid: GridSpec | None = None):
+        config = _tiny_config(load_config())
+        model = replace(
+            config.model, source="file", file=str(file_path), anomaly=None
+        )
+        if grid is None:
+            return replace(config, model=model)
+        width = (grid.nx - 1) * grid.dx
+        depth = (grid.nz - 1) * grid.dz
+        surface = min(20.0, 0.5 * depth)
+        # 一次性替换网格/源检/模型，避免中间状态触发几何校验
+        return replace(
+            config,
+            model=model,
+            grid=replace(config.grid, nx=grid.nx, nz=grid.nz, dx=grid.dx, dz=grid.dz),
+            source=replace(config.source, x=0.5 * width, z=surface),
+            receivers=replace(
+                config.receivers, x_start=0.0, x_end=width, z=surface
+            ),
+        )
+
+    def test_npz_model_compat_with_saved_model(self) -> None:
+        from ertm.data import NumpyDataStore
+
+        config = _tiny_config(load_config())
+        model = LayeredModelBuilder().build(config)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NumpyDataStore(tmp)
+            path = store.save_model(model, "vp_model")
+            loaded = FileModelBuilder().build(self._config_with_model(path))
+        self.assertEqual(loaded.shape, model.shape)
+        self.assertTrue(np.allclose(loaded.vp, model.vp, atol=1e-6))
+        self.assertTrue(np.allclose(loaded.vs, model.vs, atol=1e-6))
+        self.assertTrue(bool((loaded.vs < loaded.vp).all()))
+        self.assertEqual(loaded.grid.dx, model.grid.dx)
+
+    def test_npz_model_fills_missing_fields(self) -> None:
+        grid = GridSpec(nx=21, nz=17, dx=5.0, dz=5.0)
+        vp = np.full(grid.shape, 3000.0, dtype=np.float32)
+        vp[10:, :] = 4200.0
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vp_only.npz"
+            np.savez(path, vp=vp, dx=5.0, dz=5.0)
+            config = self._config_with_model(path, grid)
+            model = FileModelBuilder().build(config)
+        # 未给出的字段按经验关系补齐，并记录在 meta 里
+        ratio = config.model.background_vs / config.model.background_vp
+        self.assertTrue(np.allclose(model.vs, vp * ratio, rtol=1e-6))
+        self.assertTrue(np.allclose(model.rho, 310.0 * np.power(vp, 0.25), rtol=1e-5))
+        self.assertTrue(bool((model.vs < model.vp).all()))
+        self.assertIn("vs=vp*", " ".join(model.meta["filled"]))
+
+    def test_segy_velocity_model(self) -> None:
+        grid = GridSpec(nx=17, nz=13, dx=10.0, dz=8.0)
+        vp = np.full(grid.shape, 2800.0, dtype=np.float32)
+        vp[6:, :] = 3600.0
+        image = ImageResult(image=vp, grid=grid, mode="pp")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "velocity.sgy"
+            segy.write_segy_image(image, path)
+            model = FileModelBuilder().build(self._config_with_model(path, grid))
+        self.assertEqual(model.shape, grid.shape)
+        self.assertAlmostEqual(model.grid.dz, grid.dz, places=3)
+        self.assertAlmostEqual(model.grid.dx, grid.dx, places=3)
+        self.assertTrue(np.allclose(model.vp, vp, atol=1e-2))
+
+    def test_pipeline_uses_file_model(self) -> None:
+        config = _tiny_config(load_config())
+        model = LayeredModelBuilder().build(config)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vp_model.npz"
+            np.savez(path, vp=model.vp, vs=model.vs, rho=model.rho,
+                     qp=model.qp, qs=model.qs, dx=model.grid.dx, dz=model.grid.dz)
+            config = replace(
+                config,
+                model=replace(config.model, source="file", file=str(path)),
+                output=replace(
+                    config.output,
+                    root=str(Path(tmp) / "output"),
+                    save_figures=False,
+                    save_data=False,
+                ),
+            )
+            result = ERTMPipeline(config).run()
+        self.assertTrue(np.all(np.isfinite(result.image.image)))
+        self.assertEqual(result.model.meta["builder"], "file-model-builder")
 
 
 class TestSegyPipeline(unittest.TestCase):

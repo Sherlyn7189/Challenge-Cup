@@ -1,0 +1,134 @@
+{
+  "project": {
+    "name": "ERTM 文件速度模型演示",
+    "version": "0.4.0"
+  },
+  "grid": {
+    "nx": 201,
+    "nz": 151,
+    "dx": 10.0,
+    "dz": 10.0,
+    "x0": 0.0,
+    "z0": 0.0
+  },
+  "model": {
+    "background_vp": 3000.0,
+    "background_vs": 1700.0,
+    "background_rho": 2400.0,
+    "background_qp": 100.0,
+    "background_qs": 50.0,
+    "layers": [
+      {
+        "z_top": 0.0,
+        "vp": 2400.0,
+        "vs": 1200.0,
+        "rho": 2200.0,
+        "qp": 80.0,
+        "qs": 40.0
+      },
+      {
+        "z_top": 400.0,
+        "vp": 3000.0,
+        "vs": 1600.0,
+        "rho": 2400.0,
+        "qp": 100.0,
+        "qs": 50.0
+      },
+      {
+        "z_top": 900.0,
+        "vp": 3800.0,
+        "vs": 2100.0,
+        "rho": 2500.0,
+        "qp": 120.0,
+        "qs": 60.0
+      }
+    ],
+    "anomaly": {
+      "kind": "cave",
+      "x": 1000.0,
+      "z": 650.0,
+      "rx": 60.0,
+      "rz": 40.0,
+      "dip": 0.0,
+      "vp": 1800.0,
+      "vs": 900.0,
+      "rho": 2000.0,
+      "qp": 40.0,
+      "qs": 20.0
+    },
+    "source": "file",
+    "file": "data/velocity_model.npz"
+  },
+  "source": {
+    "x": 1000.0,
+    "z": 20.0,
+    "f0": 20.0,
+    "kind": "ricker",
+    "amplitude": 1.0,
+    "delay": 0.06,
+    "mechanism": "explosive"
+  },
+  "receivers": {
+    "count": 201,
+    "x_start": 0.0,
+    "x_end": 2000.0,
+    "z": 20.0,
+    "component": "p"
+  },
+  "acquisition": {
+    "geometry": "surface",
+    "components": 1,
+    "record_dt": null,
+    "rotation_deg": 0.0,
+    "mute_direct": true,
+    "shots": [
+      700.0,
+      1000.0,
+      1300.0
+    ],
+    "borehole_x": 0.0,
+    "borehole_z_start": 0.0,
+    "borehole_z_end": 1000.0
+  },
+  "solver": {
+    "nt": 2000,
+    "dt": 0.0005,
+    "order": 8,
+    "boundary": "free",
+    "dtype": "float32",
+    "engine": "acoustic",
+    "npml": 12
+  },
+  "imaging": {
+    "mode": "pp",
+    "condition": "normalized",
+    "separation": "divcurl",
+    "normalize": true,
+    "illumination": true,
+    "receiver_normalization": false,
+    "laplacian": true,
+    "lowpass_fraction": 0.85,
+    "checkpoint_mb": 128.0,
+    "eps": 1e-10,
+    "stack_normalize": true,
+    "start_periods": 1.5
+  },
+  "q": {
+    "enabled": false,
+    "alpha_c": 0.8,
+    "f_ref": 30.0,
+    "gain_cap": 30.0,
+    "apply_attenuation": false,
+    "attenuation_strength": 1.0
+  },
+  "output": {
+    "root": "output/file_model",
+    "save_figures": true,
+    "save_data": true,
+    "segy_image": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file_name": "ertm.log"
+  }
+}

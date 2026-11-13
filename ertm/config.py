@@ -174,6 +174,17 @@ class AnomalyConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
+    """地质模型配置。
+
+    ``source="layered"`` 由层状背景 + 异常体构建；``source="file"`` 从文件读取
+    速度模型（npz 或 SEG-Y），缺失的 vs/rho/Q 按经验关系补齐：
+
+    - ``vs = vp · (background_vs / background_vp)``（``vs_ratio`` 可覆盖）；
+    - ``rho = 310 · vp^0.25``（Gardner，``rho_from_gardner=false`` 时用
+      ``background_rho`` 常数）；
+    - ``qp/qs`` 取 ``background_qp/qs`` 常数（文件里给了就优先用文件）。
+    """
+
     background_vp: float = 3000.0
     background_vs: float = 1700.0
     background_rho: float = 2400.0
@@ -181,6 +192,10 @@ class ModelConfig:
     background_qs: float = 50.0
     layers: tuple[LayerConfig, ...] = ()
     anomaly: AnomalyConfig | None = None
+    source: str = "layered"
+    file: str = ""
+    vs_ratio: float | None = None
+    rho_from_gardner: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ModelConfig":
@@ -197,6 +212,14 @@ class ModelConfig:
             background_qs=_positive(data.get("background_qs", 50.0), "model.background_qs"),
             layers=layers,
             anomaly=AnomalyConfig.from_dict(data.get("anomaly")),
+            source=str(data.get("source", "layered")),
+            file=str(data.get("file", "")),
+            vs_ratio=(
+                None
+                if data.get("vs_ratio") is None
+                else _positive(data["vs_ratio"], "model.vs_ratio")
+            ),
+            rho_from_gardner=bool(data.get("rho_from_gardner", True)),
         )
         model.validate()
         return model
@@ -204,6 +227,12 @@ class ModelConfig:
     def validate(self) -> None:
         if self.background_vs >= self.background_vp:
             raise ConfigError("model 必须满足 background_vs < background_vp")
+        if self.source not in {"layered", "file"}:
+            raise ConfigError(f"model.source 必须是 layered/file，当前 {self.source!r}")
+        if self.source == "file" and not str(self.file).strip():
+            raise ConfigError("model.source='file' 时必须给出 model.file")
+        if self.vs_ratio is not None and self.vs_ratio >= 1.0:
+            raise ConfigError("model.vs_ratio 必须 < 1")
         tops = [layer.z_top for layer in self.layers]
         if tops != sorted(tops):
             raise ConfigError("model.layers 必须按 z_top 从小到大排列")
